@@ -79,11 +79,11 @@ half4 main(float2 p) {
     float2 sp = zp - n * rim * 42.0;
     float ca = 4.5 * rim;
 
-    float4 s1 = float4(eval(bgSharp, sp + n * ca));
-    float4 s2 = float4(eval(bgSharp, sp));
-    float4 s3 = float4(eval(bgSharp, sp - n * ca));
+    float4 s1 = float4(bgSharp.eval(sp + n * ca));
+    float4 s2 = float4(bgSharp.eval(sp));
+    float4 s3 = float4(bgSharp.eval(sp - n * ca));
     float3 sharpC = float3(s1.r, s2.g, s3.b);
-    float3 blurC = float3(float4(eval(bgBlur, sp)).rgb);
+    float3 blurC = float3(float4(bgBlur.eval(sp)).rgb);
     float3 col = mix(sharpC, blurC, smoothstep(0.0, 0.9, t) * 0.55);
 
     col = col * 1.04 + float3(0.05);
@@ -125,7 +125,7 @@ half4 main(float2 p) {
     float2 d2 = abs(q) - b;
     float d = length(max(d2, float2(0.0))) + min(max(d2.x, d2.y), 0.0) - radius;
     float cov = clamp(0.5 - d, 0.0, 1.0) * alpha;
-    half4 c = eval(bgBlur, p);
+    half4 c = bgBlur.eval(p);
     return half4(c.r * half(cov), c.g * half(cov), c.b * half(cov), half(cov));
 }
 """
