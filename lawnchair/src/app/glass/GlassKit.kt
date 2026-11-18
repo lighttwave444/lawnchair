@@ -36,6 +36,7 @@ uniform float radius;
 uniform float wobble;
 uniform float time;
 uniform float alpha;
+uniform float zoom;
 
 float sdf(float2 p) {
     float2 q = p - center;
@@ -54,26 +55,29 @@ half4 main(float2 p) {
     float cov = clamp(0.5 - d, 0.0, 1.0);          // borda suave (AA)
     float shadow = exp(-max(d, 0.0) / 22.0) * 0.28 * (1.0 - cov);
 
-    float bevel = 30.0;
+    float bevel = 46.0;
     float t = clamp(-d / bevel, 0.0, 1.0);          // 0 na borda, 1 no miolo
     float2 e = float2(1.0, 0.0);
     float2 n = normalize(float2(sdf(p + e.xy) - sdf(p - e.xy),
                                 sdf(p + e.yx) - sdf(p - e.yx)) + 1e-5);
 
     float rim = pow(1.0 - t, 3.0);
-    float2 sp = p - n * rim * 26.0;                 // refração na borda
-    float ca = 3.0 * rim;                           // aberração cromática
+    float2 zp = center + (p - center) / zoom;       // zoom de lente no miolo
+    float2 sp = zp - n * rim * 42.0;                // refração forte na borda
+    float ca = 4.5 * rim;                           // aberração cromática
     half3 sharp = half3(eval(bgSharp, sp + n * ca).r,
                         eval(bgSharp, sp).g,
                         eval(bgSharp, sp - n * ca).b);
     half3 blur = eval(bgBlur, sp).rgb;
-    half3 col = mix(sharp, blur, smoothstep(0.0, 0.6, t));   // miolo fosco
+    half3 col = mix(sharp, blur, smoothstep(0.0, 0.9, t) * 0.55);   // miolo só levemente fosco
 
     col = col * 1.04 + 0.05;                        // leve tint claro
     float2 L = normalize(float2(-0.6, -0.8));
     float lit = 0.25 + 0.75 * pow(abs(dot(n, L)), 2.0);
     float line = 1.0 - smoothstep(0.0, 2.0, abs(d + 1.0));   // fio de luz
-    col += line * lit * 0.7 + rim * lit * 0.12;
+    float inner = exp(min(d, 0.0) / 7.0);
+    col *= 1.0 - 0.16 * inner * (1.0 - lit);        // sombra fina colada na borda
+    col += line * lit * 0.85 + rim * lit * 0.16;
 
     float a = cov * alpha;
     return half4(col * a, a + shadow * alpha);
@@ -138,7 +142,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         val hy = lerp(startHalf.y, thy, k)
         val rStart = min(startHalf.x, startHalf.y)
         val r = lerp(rStart, cornerPx, k).coerceIn(0f, min(hx, hy))
-        val wob = (1f - k).coerceAtLeast(0f) * rStart * 0.10f
+        val wob = (1f - k).coerceAtLeast(0f) * rStart * 0.14f
 
         rt.setFloatUniform("center", cx, cy)
         rt.setFloatUniform("halfSize", hx, hy)
@@ -146,6 +150,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         rt.setFloatUniform("wobble", wob)
         rt.setFloatUniform("time", (SystemClock.uptimeMillis() % 100000L) / 1000f)
         rt.setFloatUniform("alpha", (k / 0.25f).coerceIn(0f, 1f))
+        rt.setFloatUniform("zoom", 1.0f + 0.12f * k.coerceAtMost(1f))
 
         canvas.drawRect(0f, 0f, w, h, paint)
         if (k < 1f) postInvalidateOnAnimation()   // mantém a bolha "viva"
@@ -291,8 +296,8 @@ object GlassHost {
         place(dock, hs.left + 4 * d, hs.top + 4 * d, hs.right - 4 * d, hs.bottom - 28 * d)
 
         val cx = drag.width / 2f; val cy = drag.height * 0.45f
-        panel.startCenter = PointF(cx, cy); panel.startHalf = PointF(110 * d, 110 * d)
-        dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(60 * d, 60 * d)
+        panel.startCenter = PointF(cx, cy); panel.startHalf = PointF(drag.width * 0.34f, drag.width * 0.24f)
+        dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(drag.width * 0.20f, drag.width * 0.10f)
     }
 
     private fun place(v: GlassView, l: Float, t: Float, r: Float, b: Float) {
