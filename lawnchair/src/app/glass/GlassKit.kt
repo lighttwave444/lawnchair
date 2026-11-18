@@ -67,7 +67,7 @@ half4 main(float2 p) {
     float cov = clamp(0.5 - d, 0.0, 1.0);
     float dropSh = exp(-max(d, 0.0) / 22.0) * 0.28 * (1.0 - cov);
 
-    float bevel = 46.0;
+    float bevel = 52.0;
     float t = clamp(-d / bevel, 0.0, 1.0);
     float2 ex = float2(1.0, 0.0);
     float2 ey = float2(0.0, 1.0);
@@ -84,16 +84,16 @@ half4 main(float2 p) {
     float4 s3 = float4(bgSharp.eval(sp - n * ca));
     float3 sharpC = float3(s1.r, s2.g, s3.b);
     float3 blurC = float3(float4(bgBlur.eval(sp)).rgb);
-    float3 col = mix(sharpC, blurC, smoothstep(0.0, 0.9, t) * 0.55);
+    float3 col = mix(sharpC, blurC, smoothstep(0.0, 0.7, t) * 0.92);
 
-    col = col * 1.04 + float3(0.05);
+    col = col * 1.05 + float3(0.07);
     float2 L = normalize(float2(-0.6, -0.8));
     float dl = dot(n, L);
     float lit = 0.25 + 0.75 * pow(abs(dl), 2.0);
     float edgeLine = 1.0 - smoothstep(0.0, 2.0, abs(d + 1.0));
     float innerSh = exp(min(d, 0.0) / 7.0);
     col = col * (1.0 - 0.16 * innerSh * (1.0 - lit));
-    col = col + float3(edgeLine * lit * 0.85 + rim * lit * 0.16);
+    col = col + float3(edgeLine * lit * 1.15 + rim * lit * 0.16);
     float softSh = exp(min(d, 0.0) / 20.0);
     col = col * (1.0 - 0.12 * softSh * (0.5 - 0.5 * dl));
     col = col + float3(0.10 * softSh * max(dl, 0.0));
@@ -174,9 +174,9 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         val dm = resources.displayMetrics
         val full = centerCrop(src, dm.widthPixels, dm.heightPixels)
         val small = fastBlur(full)
-        sharp = BitmapShader(full, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        sharp = BitmapShader(full, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
             .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
-        blur = BitmapShader(small, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        blur = BitmapShader(small, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
             .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
         blurScale = full.width.toFloat() / small.width
         invalidate()
@@ -210,7 +210,6 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         if (!logged) {
             logged = true
             Log.i("GlassView", "primeiro draw k=$k size=${width}x${height} loc=${loc[0]},${loc[1]}")
-            glassToast(context, "Glass: desenhando ${width}x${height} em ${loc[0]},${loc[1]}")
         }
         val w = width.toFloat(); val h = height.toFloat()
         val thx = (w - 2 * padPx) / 2; val thy = (h - 2 * padPx) / 2
@@ -253,8 +252,9 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
     /** Desfoque barato: reduz 1/16 e sobe um pouco (o filtro linear faz o resto). */
     private fun fastBlur(src: Bitmap): Bitmap {
         var b = src
-        repeat(2) { b = Bitmap.createScaledBitmap(b, max(1, b.width / 4), max(1, b.height / 4), true) }
-        return Bitmap.createScaledBitmap(b, b.width * 2, b.height * 2, true)
+        repeat(3) { b = Bitmap.createScaledBitmap(b, max(1, b.width / 3), max(1, b.height / 3), true) }
+        repeat(2) { b = Bitmap.createScaledBitmap(b, b.width * 2, b.height * 2, true) }
+        return b
     }
 }
 
@@ -349,7 +349,6 @@ object GlassHost {
         if (Build.VERSION.SDK_INT < 33 || installed) return
         val bmp = loadWallpaper(l)
         Log.i("GlassHost", "install: bmp=${bmp?.width}x${bmp?.height}")
-        glassToast(l, if (bmp == null) "Glass: sem imagem, abrindo seletor" else "Glass: imagem ${bmp.width}x${bmp.height} ok")
         if (bmp == null) { askForImage(l); return }   // Android bloqueou o wallpaper: pede a imagem
         try { build(l, bmp); installed = true } catch (t: Throwable) {
             Log.e("GlassHost", "falhou", t); glassToast(l, "Glass ERRO build: ${t.javaClass.simpleName}: ${t.message}")
@@ -403,7 +402,6 @@ object GlassHost {
         }
         views = listOf(panel, dock)
         Log.i("GlassHost", "build ok: views adicionadas")
-        glassToast(l, "Glass: criado")
 
         drag.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> position(l, panel, dock) }
         drag.post { position(l, panel, dock) }
@@ -428,20 +426,19 @@ object GlassHost {
         val d = l.resources.displayMetrics.density
         if (drag.width == 0) return
 
-        // Painel = área onde ficam os ícones da home
-        val wp = l.deviceProfile.workspacePadding
-        place(panel, wp.left - 8 * d, wp.top - 8 * d,
-            drag.width - wp.right + 8 * d, drag.height - wp.bottom + 8 * d)
-
-        // Dock = área do hotseat (ajuste fino depois, vendo na tela)
+        val w = drag.width.toFloat(); val h = drag.height.toFloat()
+        // Medidas tiradas do print de referência (720x1612), em proporção da tela
+        panel.cornerPx = 0.095f * w
+        dock.cornerPx = 0.100f * w
+        place(panel, 0.053f * w, 0.099f * h, 0.947f * w, 0.775f * h)
+        place(dock, 0.056f * w, 0.851f * h, 0.944f * w, 0.969f * h)
         val hs = l.hotseat
-        place(dock, hs.left + 4 * d, hs.top + 4 * d, hs.right - 4 * d, hs.bottom - 28 * d)
+        val wp = l.deviceProfile.workspacePadding
 
         val cx = drag.width / 2f; val cy = drag.height * 0.45f
         panel.startCenter = PointF(cx, cy); panel.startHalf = PointF(drag.width * 0.34f, drag.width * 0.24f)
         dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(drag.width * 0.20f, drag.width * 0.10f)
         val pl = panel.layoutParams as FrameLayout.LayoutParams
-        if (!posShown) { posShown = true; glassToast(l, "Glass: painel ${pl.width}x${pl.height} margem ${pl.leftMargin},${pl.topMargin}") }
         Log.i("GlassHost", "pos drag=${drag.width}x${drag.height} wp=$wp panel=${pl.leftMargin},${pl.topMargin} ${pl.width}x${pl.height} hotseat=${hs.left},${hs.top},${hs.right},${hs.bottom}")
     }
 
