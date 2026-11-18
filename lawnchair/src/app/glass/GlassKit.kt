@@ -106,11 +106,50 @@ half4 main(float2 p) {
 }
 """
 
+
+/* Shader de reserva: o mais simples possível, só pra ter vidro se o completo não compilar. */
+private const val AGSL_SIMPLE = """
+uniform shader bgBlur;
+uniform shader bgSharp;
+uniform float2 center;
+uniform float2 halfSize;
+uniform float radius;
+uniform float wobble;
+uniform float time;
+uniform float alpha;
+uniform float zoom;
+
+half4 main(float2 p) {
+    float2 q = p - center;
+    float2 b = halfSize - float2(radius);
+    float2 d2 = abs(q) - b;
+    float d = length(max(d2, float2(0.0))) + min(max(d2.x, d2.y), 0.0) - radius;
+    float cov = clamp(0.5 - d, 0.0, 1.0) * alpha;
+    half4 c = eval(bgBlur, p);
+    return half4(c.r * half(cov), c.g * half(cov), c.b * half(cov), half(cov));
+}
+"""
+
+private fun makeShader(c: Context): RuntimeShader {
+    val errs = StringBuilder()
+    for ((name, src) in listOf("completo" to AGSL, "simples" to AGSL_SIMPLE)) {
+        try {
+            val sh = RuntimeShader(src)
+            if (errs.isNotEmpty()) glassToast(c, "Glass: shader $name em uso (o completo falhou)")
+            return sh
+        } catch (t: Throwable) {
+            errs.append("[").append(name).append("] ").append(t.message).append("\n\n")
+            try { File(c.filesDir, "glass_error.txt").writeText(errs.toString()) } catch (_: Throwable) {}
+        }
+    }
+    throw IllegalStateException(errs.toString())
+}
+
 @RequiresApi(33)
 class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = null) : View(c, attrs) {
 
     private val dp = resources.displayMetrics.density
-    private val rt = RuntimeShader(AGSL)
+    private val rt = makeShader(c)
     private val paint = Paint().apply { shader = rt }
     private var sharp: BitmapShader? = null
     private var blur: BitmapShader? = null
