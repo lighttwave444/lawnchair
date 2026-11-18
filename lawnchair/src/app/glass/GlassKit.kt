@@ -2,9 +2,19 @@ package app.glass // troque pelo package do seu launcher
 
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.KeyguardManager
+import android.app.WallpaperManager
 import android.content.*
 import android.graphics.*
+import android.os.Build
 import android.os.SystemClock
+import android.widget.FrameLayout
+import android.graphics.drawable.BitmapDrawable
+import androidx.core.graphics.drawable.toBitmap
+import com.android.launcher3.InsettableFrameLayout
+import com.android.launcher3.Launcher
+import com.android.launcher3.LauncherState
+import com.android.launcher3.statemanager.StateManager
 import android.util.AttributeSet
 import android.view.View
 import android.view.animation.OvershootInterpolator
@@ -172,7 +182,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
 class GlassUnlockController(
     private val act: Activity,
     private val glass: List<GlassView>,   // [painel, dock]
-    private val content: View             // workspace + ícones
+    private val content: List<View>       // workspace + hotseat
 ) {
     private val rx = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
@@ -195,7 +205,13 @@ class GlassUnlockController(
 
     private fun reset() {
         glass.forEach { it.progress = 0f }
-        content.alpha = 0f
+        content.forEach { it.alpha = 0f }
+    }
+
+    /** Segurança: se o launcher voltou e os ícones ficaram escondidos sem bloqueio, mostra. */
+    fun onResume() {
+        val km = act.getSystemService(KeyguardManager::class.java)
+        if (!km.isKeyguardLocked && content.firstOrNull()?.alpha == 0f) play()
     }
 
     private fun play() {
@@ -207,9 +223,7 @@ class GlassUnlockController(
                 addUpdateListener { g.progress = it.animatedValue as Float }
             }.start()
         }
-        content.animate().alpha(1f).scaleX(1f).scaleY(1f)
-            .setStartDelay(380).setDuration(320).start()
-        content.scaleX = 0.94f; content.scaleY = 0.94f
+        content.forEach { it.animate().alpha(1f).setStartDelay(380).setDuration(320).start() }
     }
 }
 
@@ -219,4 +233,80 @@ class GlassUnlockController(
 object GlassGrid {
     fun cellWidth(panelW: Int, innerPad: Int, cols: Int = 5) = (panelW - 2 * innerPad) / cols
     fun rows(panelH: Int, innerPad: Int, cellH: Int) = (panelH - 2 * innerPad) / cellH
+}
+
+/* ------------------------------------------------------------------ *
+ * Liga tudo no Lawnchair: cria o painel e o dock de vidro atrás do
+ * workspace e acompanha o tamanho real da home.
+ * ------------------------------------------------------------------ */
+@RequiresApi(33)
+object GlassHost {
+    private var controller: GlassUnlockController? = null
+    private var views: List<GlassView> = emptyList()
+
+    fun install(l: Launcher) {
+        if (Build.VERSION.SDK_INT < 33) return
+        val bmp = loadWallpaper(l) ?: return          // sem wallpaper = sem vidro (não quebra)
+        val d = l.resources.displayMetrics.density
+
+        val panel = GlassView(l).apply { setWallpaper(bmp) }
+        val dock = GlassView(l).apply { setWallpaper(bmp); cornerPx = 34 * d }
+        val drag = l.dragLayer
+        listOf(dock, panel).forEach { v ->
+            drag.addView(v, 1, FrameLayout.LayoutParams(1, 1))   // atrás do workspace
+            (v.layoutParams as? InsettableFrameLayout.LayoutParams)?.ignoreInsets = true
+        }
+        views = listOf(panel, dock)
+
+        drag.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> position(l, panel, dock) }
+        drag.post { position(l, panel, dock) }
+
+        l.stateManager.addStateListener(object : StateManager.StateListener<LauncherState> {
+            override fun onStateTransitionStart(toState: LauncherState) {
+                val a = if (toState == LauncherState.NORMAL) 1f else 0f
+                views.forEach { it.animate().alpha(a).setDuration(200).start() }
+            }
+            override fun onStateTransitionComplete(finalState: LauncherState) {}
+        })
+
+        controller = GlassUnlockController(l, views, listOf(l.workspace, l.hotseat)).also { it.attach() }
+    }
+
+    fun onResume() { controller?.onResume() }
+
+    fun uninstall() { controller?.detach(); controller = null }
+
+    private fun position(l: Launcher, panel: GlassView, dock: GlassView) {
+        val drag = l.dragLayer
+        val d = l.resources.displayMetrics.density
+        if (drag.width == 0) return
+
+        // Painel = área onde ficam os ícones da home
+        val wp = l.deviceProfile.workspacePadding
+        place(panel, wp.left - 8 * d, wp.top - 8 * d,
+            drag.width - wp.right + 8 * d, drag.height - wp.bottom + 8 * d)
+
+        // Dock = área do hotseat (ajuste fino depois, vendo na tela)
+        val hs = l.hotseat
+        place(dock, hs.left + 4 * d, hs.top + 4 * d, hs.right - 4 * d, hs.bottom - 28 * d)
+
+        val cx = drag.width / 2f; val cy = drag.height * 0.45f
+        panel.startCenter = PointF(cx, cy); panel.startHalf = PointF(110 * d, 110 * d)
+        dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(60 * d, 60 * d)
+    }
+
+    private fun place(v: GlassView, l: Float, t: Float, r: Float, b: Float) {
+        val lp = v.layoutParams as? FrameLayout.LayoutParams ?: return
+        val pad = v.padPx.toInt()
+        val nl = l.toInt() - pad; val nt = t.toInt() - pad
+        val nw = (r - l).toInt() + 2 * pad; val nh = (b - t).toInt() + 2 * pad
+        if (lp.leftMargin == nl && lp.topMargin == nt && lp.width == nw && lp.height == nh) return
+        lp.leftMargin = nl; lp.topMargin = nt; lp.width = nw; lp.height = nh
+        v.layoutParams = lp   // mesmo objeto (subclasse do Launcher), só dispara novo layout
+    }
+
+    private fun loadWallpaper(c: Context): Bitmap? = try {
+        val dr = WallpaperManager.getInstance(c).drawable
+        (dr as? BitmapDrawable)?.bitmap ?: dr?.toBitmap()
+    } catch (t: Throwable) { null }
 }

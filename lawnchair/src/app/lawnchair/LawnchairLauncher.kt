@@ -167,6 +167,7 @@ class LawnchairLauncher : QuickstepLauncher() {
             defaultOverlay.setEnableFeed(enable)
         }.launchIn(scope = lifecycleScope)
         launcher.stateManager.addStateListener(clearSearchStateListener)
+        if (android.os.Build.VERSION.SDK_INT >= 33) app.glass.GlassHost.install(this)
 
         if (prefs.autoLaunchRoot.get()) {
             lifecycleScope.launch {
@@ -469,6 +470,7 @@ class LawnchairLauncher : QuickstepLauncher() {
 
     override fun onResume() {
         super.onResume()
+        if (android.os.Build.VERSION.SDK_INT >= 33) app.glass.GlassHost.onResume()
         restartIfPending()
         refreshPredictionContainersFromModel()
 
@@ -499,6 +501,7 @@ class LawnchairLauncher : QuickstepLauncher() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (android.os.Build.VERSION.SDK_INT >= 33) app.glass.GlassHost.uninstall()
         // Only actually closes if required, safe to call if not enabled
         SmartspacerClient.close()
     }
