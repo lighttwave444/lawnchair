@@ -58,45 +58,51 @@ float sdf(float2 p) {
     return d - wobble * w;
 }
 
-float hash(float2 p) {
-    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+float hash21(float2 q) {
+    return fract(sin(dot(q, float2(127.1, 311.7))) * 43758.5453);
 }
 
 half4 main(float2 p) {
     float d = sdf(p);
-    float cov = clamp(0.5 - d, 0.0, 1.0);          // borda suave (AA)
-    float shadow = exp(-max(d, 0.0) / 22.0) * 0.28 * (1.0 - cov);
+    float cov = clamp(0.5 - d, 0.0, 1.0);
+    float dropSh = exp(-max(d, 0.0) / 22.0) * 0.28 * (1.0 - cov);
 
     float bevel = 46.0;
-    float t = clamp(-d / bevel, 0.0, 1.0);          // 0 na borda, 1 no miolo
-    float2 e = float2(1.0, 0.0);
-    float2 n = normalize(float2(sdf(p + e.xy) - sdf(p - e.xy),
-                                sdf(p + e.yx) - sdf(p - e.yx)) + 1e-5);
+    float t = clamp(-d / bevel, 0.0, 1.0);
+    float2 ex = float2(1.0, 0.0);
+    float2 ey = float2(0.0, 1.0);
+    float2 g = float2(sdf(p + ex) - sdf(p - ex), sdf(p + ey) - sdf(p - ey));
+    float2 n = g / max(length(g), 0.0001);
 
     float rim = pow(1.0 - t, 3.0);
-    float2 zp = center + (p - center) / zoom;       // zoom de lente no miolo
-    float2 sp = zp - n * rim * 42.0;                // refração forte na borda
-    float ca = 4.5 * rim;                           // aberração cromática
-    half3 sharp = half3(eval(bgSharp, sp + n * ca).r,
-                        eval(bgSharp, sp).g,
-                        eval(bgSharp, sp - n * ca).b);
-    half3 blur = eval(bgBlur, sp).rgb;
-    half3 col = mix(sharp, blur, smoothstep(0.0, 0.9, t) * 0.55);   // miolo só levemente fosco
+    float2 zp = center + (p - center) / zoom;
+    float2 sp = zp - n * rim * 42.0;
+    float ca = 4.5 * rim;
 
-    col = col * 1.04 + 0.05;                        // leve tint claro
+    float4 s1 = float4(eval(bgSharp, sp + n * ca));
+    float4 s2 = float4(eval(bgSharp, sp));
+    float4 s3 = float4(eval(bgSharp, sp - n * ca));
+    float3 sharpC = float3(s1.r, s2.g, s3.b);
+    float3 blurC = float3(float4(eval(bgBlur, sp)).rgb);
+    float3 col = mix(sharpC, blurC, smoothstep(0.0, 0.9, t) * 0.55);
+
+    col = col * 1.04 + float3(0.05);
     float2 L = normalize(float2(-0.6, -0.8));
-    float lit = 0.25 + 0.75 * pow(abs(dot(n, L)), 2.0);
-    float line = 1.0 - smoothstep(0.0, 2.0, abs(d + 1.0));   // fio de luz
-    float inner = exp(min(d, 0.0) / 7.0);
-    col *= 1.0 - 0.16 * inner * (1.0 - lit);        // sombra fina colada na borda
-    col += line * lit * 0.85 + rim * lit * 0.16;
-    float soft = exp(min(d, 0.0) / 20.0);
-    col *= 1.0 - 0.12 * soft * (0.5 - 0.5 * dot(n, L));   // sombra interna suave
-    col += 0.10 * soft * max(dot(n, L), 0.0);               // brilho interno
-    col += (hash(p) - 0.5) * 0.035 * smoothstep(0.0, 0.9, t);   // frost (grão)
+    float dl = dot(n, L);
+    float lit = 0.25 + 0.75 * pow(abs(dl), 2.0);
+    float edgeLine = 1.0 - smoothstep(0.0, 2.0, abs(d + 1.0));
+    float innerSh = exp(min(d, 0.0) / 7.0);
+    col = col * (1.0 - 0.16 * innerSh * (1.0 - lit));
+    col = col + float3(edgeLine * lit * 0.85 + rim * lit * 0.16);
+    float softSh = exp(min(d, 0.0) / 20.0);
+    col = col * (1.0 - 0.12 * softSh * (0.5 - 0.5 * dl));
+    col = col + float3(0.10 * softSh * max(dl, 0.0));
+    col = col + float3((hash21(p) - 0.5) * 0.035 * smoothstep(0.0, 0.9, t));
 
     float a = cov * alpha;
-    return half4(col * a, a + shadow * alpha);
+    float outA = min(a + dropSh * alpha, 1.0);
+    float3 outRgb = col * a;
+    return half4(half(outRgb.r), half(outRgb.g), half(outRgb.b), half(outA));
 }
 """
 
