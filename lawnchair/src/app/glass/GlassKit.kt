@@ -9,6 +9,7 @@ import android.graphics.*
 import android.net.Uri
 import android.os.Build
 import android.util.Log
+import android.widget.Toast
 import java.io.File
 import android.os.SystemClock
 import android.widget.FrameLayout
@@ -30,6 +31,10 @@ import kotlin.math.min
  * Forma = retângulo arredondado + ondulação. Com wobble alto vira bolha,
  * com wobble 0 vira o painel retangular da home.
  * ------------------------------------------------------------------ */
+internal fun glassToast(c: Context, m: String) {
+    try { Toast.makeText(c, m, Toast.LENGTH_LONG).show() } catch (_: Throwable) {}
+}
+
 private const val AGSL = """
 uniform shader bgBlur;
 uniform shader bgSharp;
@@ -139,6 +144,9 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         if (broken) return
         try { drawGlass(canvas) } catch (t: Throwable) {
             broken = true; Log.e("GlassView", "shader falhou", t)
+            val msg = "${t.javaClass.simpleName}: ${t.message}"
+            try { File(context.filesDir, "glass_error.txt").writeText(msg) } catch (_: Throwable) {}
+            glassToast(context, "Glass ERRO: ${msg.take(350)}")
         }
     }
 
@@ -154,7 +162,11 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         rt.setInputShader("bgBlur", b)
 
         val k = progress.coerceAtLeast(0f)
-        if (!logged) { logged = true; Log.i("GlassView", "primeiro draw k=$k size=${width}x${height} loc=${loc[0]},${loc[1]}") }
+        if (!logged) {
+            logged = true
+            Log.i("GlassView", "primeiro draw k=$k size=${width}x${height} loc=${loc[0]},${loc[1]}")
+            glassToast(context, "Glass: desenhando ${width}x${height} em ${loc[0]},${loc[1]}")
+        }
         val w = width.toFloat(); val h = height.toFloat()
         val thx = (w - 2 * padPx) / 2; val thy = (h - 2 * padPx) / 2
 
@@ -286,13 +298,17 @@ object GlassHost {
 
     private const val REQ_PICK = 7391
     private var installed = false
+    private var posShown = false
 
     fun install(l: Launcher) {
         if (Build.VERSION.SDK_INT < 33 || installed) return
         val bmp = loadWallpaper(l)
         Log.i("GlassHost", "install: bmp=${bmp?.width}x${bmp?.height}")
+        glassToast(l, if (bmp == null) "Glass: sem imagem, abrindo seletor" else "Glass: imagem ${bmp.width}x${bmp.height} ok")
         if (bmp == null) { askForImage(l); return }   // Android bloqueou o wallpaper: pede a imagem
-        try { build(l, bmp); installed = true } catch (t: Throwable) { Log.e("GlassHost", "falhou", t) }
+        try { build(l, bmp); installed = true } catch (t: Throwable) {
+            Log.e("GlassHost", "falhou", t); glassToast(l, "Glass ERRO build: ${t.javaClass.simpleName}: ${t.message}")
+        }
     }
 
     private fun askForImage(l: Launcher) {
@@ -342,6 +358,7 @@ object GlassHost {
         }
         views = listOf(panel, dock)
         Log.i("GlassHost", "build ok: views adicionadas")
+        glassToast(l, "Glass: criado")
 
         drag.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> position(l, panel, dock) }
         drag.post { position(l, panel, dock) }
@@ -379,6 +396,7 @@ object GlassHost {
         panel.startCenter = PointF(cx, cy); panel.startHalf = PointF(drag.width * 0.34f, drag.width * 0.24f)
         dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(drag.width * 0.20f, drag.width * 0.10f)
         val pl = panel.layoutParams as FrameLayout.LayoutParams
+        if (!posShown) { posShown = true; glassToast(l, "Glass: painel ${pl.width}x${pl.height} margem ${pl.leftMargin},${pl.topMargin}") }
         Log.i("GlassHost", "pos drag=${drag.width}x${drag.height} wp=$wp panel=${pl.leftMargin},${pl.topMargin} ${pl.width}x${pl.height} hotseat=${hs.left},${hs.top},${hs.right},${hs.bottom}")
     }
 
