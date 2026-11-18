@@ -133,6 +133,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
     }
 
     private var broken = false
+    private var logged = false
 
     override fun onDraw(canvas: Canvas) {
         if (broken) return
@@ -153,6 +154,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         rt.setInputShader("bgBlur", b)
 
         val k = progress.coerceAtLeast(0f)
+        if (!logged) { logged = true; Log.i("GlassView", "primeiro draw k=$k size=${width}x${height} loc=${loc[0]},${loc[1]}") }
         val w = width.toFloat(); val h = height.toFloat()
         val thx = (w - 2 * padPx) / 2; val thy = (h - 2 * padPx) / 2
 
@@ -214,6 +216,7 @@ class GlassUnlockController(
             when (i.action) {
                 Intent.ACTION_SCREEN_OFF -> reset()
                 Intent.ACTION_USER_PRESENT -> play()
+                Intent.ACTION_SCREEN_ON -> act.window.decorView.postDelayed({ onResume() }, 2500)
             }
         }
     }
@@ -222,13 +225,15 @@ class GlassUnlockController(
         val f = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_SCREEN_ON)
         }
-        act.registerReceiver(rx, f, Context.RECEIVER_NOT_EXPORTED)
+        act.registerReceiver(rx, f, Context.RECEIVER_EXPORTED)
     }
 
     fun detach() = act.unregisterReceiver(rx)
 
     private fun reset() {
+        Log.i("GlassCtl", "reset (tela apagou)")
         glass.forEach { it.progress = 0f }
         content.forEach { it.alpha = 0f }
     }
@@ -236,10 +241,20 @@ class GlassUnlockController(
     /** Segurança: se o launcher voltou e os ícones ficaram escondidos sem bloqueio, mostra. */
     fun onResume() {
         val km = act.getSystemService(KeyguardManager::class.java)
-        if (!km.isKeyguardLocked && content.firstOrNull()?.alpha == 0f) play()
+        if (!km.isKeyguardLocked && (content.any { it.alpha < 0.99f } || glass.any { it.progress < 1f })) play()
     }
 
+    private var playing = false
+
     private fun play() {
+        if (playing) return
+        playing = true
+        Log.i("GlassCtl", "play (desbloqueou)")
+        act.window.decorView.postDelayed({
+            content.forEach { it.alpha = 1f }
+            glass.forEach { it.progress = 1f }
+            playing = false
+        }, 1500)   // rede de segurança: depois de 1,5 s tudo fica visível
         glass.forEachIndexed { i, g ->
             ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 750
@@ -275,6 +290,7 @@ object GlassHost {
     fun install(l: Launcher) {
         if (Build.VERSION.SDK_INT < 33 || installed) return
         val bmp = loadWallpaper(l)
+        Log.i("GlassHost", "install: bmp=${bmp?.width}x${bmp?.height}")
         if (bmp == null) { askForImage(l); return }   // Android bloqueou o wallpaper: pede a imagem
         try { build(l, bmp); installed = true } catch (t: Throwable) { Log.e("GlassHost", "falhou", t) }
     }
@@ -325,6 +341,7 @@ object GlassHost {
             (v.layoutParams as? InsettableFrameLayout.LayoutParams)?.ignoreInsets = true
         }
         views = listOf(panel, dock)
+        Log.i("GlassHost", "build ok: views adicionadas")
 
         drag.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> position(l, panel, dock) }
         drag.post { position(l, panel, dock) }
@@ -361,6 +378,8 @@ object GlassHost {
         val cx = drag.width / 2f; val cy = drag.height * 0.45f
         panel.startCenter = PointF(cx, cy); panel.startHalf = PointF(drag.width * 0.34f, drag.width * 0.24f)
         dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(drag.width * 0.20f, drag.width * 0.10f)
+        val pl = panel.layoutParams as FrameLayout.LayoutParams
+        Log.i("GlassHost", "pos drag=${drag.width}x${drag.height} wp=$wp panel=${pl.leftMargin},${pl.topMargin} ${pl.width}x${pl.height} hotseat=${hs.left},${hs.top},${hs.right},${hs.bottom}")
     }
 
     private fun place(v: GlassView, l: Float, t: Float, r: Float, b: Float) {
