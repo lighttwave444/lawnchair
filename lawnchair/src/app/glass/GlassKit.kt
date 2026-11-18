@@ -6,7 +6,10 @@ import android.app.KeyguardManager
 import android.app.WallpaperManager
 import android.content.*
 import android.graphics.*
+import android.net.Uri
 import android.os.Build
+import android.util.Log
+import java.io.File
 import android.os.SystemClock
 import android.widget.FrameLayout
 import android.graphics.drawable.BitmapDrawable
@@ -50,6 +53,10 @@ float sdf(float2 p) {
     return d - wobble * w;
 }
 
+float hash(float2 p) {
+    return fract(sin(dot(p, float2(127.1, 311.7))) * 43758.5453);
+}
+
 half4 main(float2 p) {
     float d = sdf(p);
     float cov = clamp(0.5 - d, 0.0, 1.0);          // borda suave (AA)
@@ -78,6 +85,10 @@ half4 main(float2 p) {
     float inner = exp(min(d, 0.0) / 7.0);
     col *= 1.0 - 0.16 * inner * (1.0 - lit);        // sombra fina colada na borda
     col += line * lit * 0.85 + rim * lit * 0.16;
+    float soft = exp(min(d, 0.0) / 20.0);
+    col *= 1.0 - 0.12 * soft * (0.5 - 0.5 * dot(n, L));   // sombra interna suave
+    col += 0.10 * soft * max(dot(n, L), 0.0);               // brilho interno
+    col += (hash(p) - 0.5) * 0.035 * smoothstep(0.0, 0.9, t);   // frost (grão)
 
     float a = cov * alpha;
     return half4(col * a, a + shadow * alpha);
@@ -121,7 +132,16 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         invalidate()
     }
 
+    private var broken = false
+
     override fun onDraw(canvas: Canvas) {
+        if (broken) return
+        try { drawGlass(canvas) } catch (t: Throwable) {
+            broken = true; Log.e("GlassView", "shader falhou", t)
+        }
+    }
+
+    private fun drawGlass(canvas: Canvas) {
         val s = sharp ?: return
         val b = blur ?: return
         getLocationOnScreen(loc)
@@ -249,9 +269,52 @@ object GlassHost {
     private var controller: GlassUnlockController? = null
     private var views: List<GlassView> = emptyList()
 
+    private const val REQ_PICK = 7391
+    private var installed = false
+
     fun install(l: Launcher) {
-        if (Build.VERSION.SDK_INT < 33) return
-        val bmp = loadWallpaper(l) ?: return          // sem wallpaper = sem vidro (não quebra)
+        if (Build.VERSION.SDK_INT < 33 || installed) return
+        val bmp = loadWallpaper(l)
+        if (bmp == null) { askForImage(l); return }   // Android bloqueou o wallpaper: pede a imagem
+        try { build(l, bmp); installed = true } catch (t: Throwable) { Log.e("GlassHost", "falhou", t) }
+    }
+
+    private fun askForImage(l: Launcher) {
+        try {
+            l.startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE); type = "image/*"
+            }, REQ_PICK)
+        } catch (t: Throwable) { Log.e("GlassHost", "sem seletor", t) }
+    }
+
+    /** Chamado pelo onActivityResult do launcher. Retorna true se tratou. */
+    fun onActivityResult(l: Launcher, req: Int, res: Int, data: Intent?): Boolean {
+        if (req != REQ_PICK) return false
+        val uri = data?.data
+        if (res == Activity.RESULT_OK && uri != null && saveFromUri(l, uri)) {
+            loadWallpaper(l)?.let { bmp ->
+                try { WallpaperManager.getInstance(l).setBitmap(bmp) } catch (_: Throwable) {}
+                try { build(l, bmp); installed = true } catch (t: Throwable) { Log.e("GlassHost", "falhou", t) }
+            }
+        }
+        return true
+    }
+
+    private fun saveFromUri(l: Launcher, uri: Uri): Boolean = try {
+        val dm = l.resources.displayMetrics
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        l.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        var ss = 1
+        while (bounds.outWidth / (ss * 2) >= dm.widthPixels && bounds.outHeight / (ss * 2) >= dm.heightPixels) ss *= 2
+        val opts = BitmapFactory.Options().apply { inSampleSize = ss }
+        val bmp = l.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+        if (bmp == null) false else {
+            File(l.filesDir, "glass_wallpaper.jpg").outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+            true
+        }
+    } catch (t: Throwable) { false }
+
+    private fun build(l: Launcher, bmp: Bitmap) {
         val d = l.resources.displayMetrics.density
 
         val panel = GlassView(l).apply { setWallpaper(bmp) }
@@ -279,7 +342,7 @@ object GlassHost {
 
     fun onResume() { controller?.onResume() }
 
-    fun uninstall() { controller?.detach(); controller = null }
+    fun uninstall() { controller?.detach(); controller = null; installed = false }
 
     private fun position(l: Launcher, panel: GlassView, dock: GlassView) {
         val drag = l.dragLayer
@@ -310,8 +373,14 @@ object GlassHost {
         v.layoutParams = lp   // mesmo objeto (subclasse do Launcher), só dispara novo layout
     }
 
-    private fun loadWallpaper(c: Context): Bitmap? = try {
-        val dr = WallpaperManager.getInstance(c).drawable
-        (dr as? BitmapDrawable)?.bitmap ?: dr?.toBitmap()
-    } catch (t: Throwable) { null }
+    private fun loadWallpaper(c: Context): Bitmap? {
+        try {   // 1) imagem escolhida por você
+            val f = File(c.filesDir, "glass_wallpaper.jpg")
+            if (f.exists()) BitmapFactory.decodeFile(f.path)?.let { return it }
+        } catch (_: Throwable) {}
+        return try {   // 2) wallpaper do sistema (pode ser bloqueado pelo Android)
+            val dr = WallpaperManager.getInstance(c).drawable
+            (dr as? BitmapDrawable)?.bitmap ?: dr?.toBitmap()
+        } catch (t: Throwable) { null }
+    }
 }

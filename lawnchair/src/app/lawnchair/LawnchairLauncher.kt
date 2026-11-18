@@ -468,6 +468,12 @@ class LawnchairLauncher : QuickstepLauncher() {
         return ActivityOptionsWrapper(options, callback)
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            app.glass.GlassHost.onActivityResult(this, requestCode, resultCode, data)) return
+        super.onActivityResult(requestCode, resultCode, data)
+    }
+
     override fun onResume() {
         super.onResume()
         if (android.os.Build.VERSION.SDK_INT >= 33) app.glass.GlassHost.onResume()
