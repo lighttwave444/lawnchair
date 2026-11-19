@@ -350,6 +350,7 @@ object GlassHost {
 
     private const val REQ_PICK = 7391
     private var installed = false
+    private var drawerOpen = false
     private var posShown = false
 
     fun install(l: Launcher) {
@@ -415,10 +416,21 @@ object GlassHost {
 
         // Tela inicial: só o dock de vidro. Gaveta aberta: só o vidro grande (fundo da gaveta).
         fun applyState(st: LauncherState) {
-            val panelA = if (st == LauncherState.ALL_APPS) 1f else 0f
+            drawerOpen = st == LauncherState.ALL_APPS
+            val panelA = if (drawerOpen) 1f else 0f
             val dockA = if (st == LauncherState.NORMAL) 1f else 0f
             panel.animate().alpha(panelA).setDuration(220).start()
             dock.animate().alpha(dockA).setDuration(220).start()
+            // Gaveta aberta: esconde a tela inicial (ícones, widgets, dock) pra não aparecer por trás do vidro
+            listOf<View>(l.workspace, l.hotseat).forEach { v ->
+                if (drawerOpen) {
+                    v.animate().alpha(0f).setDuration(200)
+                        .withEndAction { if (drawerOpen) v.visibility = View.INVISIBLE }.start()
+                } else {
+                    v.visibility = View.VISIBLE
+                    v.animate().alpha(1f).setDuration(200).start()
+                }
+            }
         }
         l.stateManager.addStateListener(object : StateManager.StateListener<LauncherState> {
             override fun onStateTransitionStart(toState: LauncherState) { applyState(toState) }
