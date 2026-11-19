@@ -90,14 +90,18 @@ half4 main(float2 p) {
     float3 col = mix(sharpC, blurC, smoothstep(0.0, 0.7, t) * 0.75);
 
     float lum = dot(col, float3(0.299, 0.587, 0.114));
-    col = mix(float3(lum), col, 1.18);
+    col = mix(float3(lum), col, 1.22);
+    col = col * 1.12;
     float2 L = normalize(float2(-0.6, -0.8));
     float dl = dot(n, L);
     float lit = 0.25 + 0.75 * pow(abs(dl), 2.0);
     float edgeLine = 1.0 - smoothstep(0.0, 2.0, abs(d + 1.0));
     float innerSh = exp(min(d, 0.0) / 7.0);
     col = col * (1.0 - 0.16 * innerSh * (1.0 - lit));
-    col = col + float3(edgeLine * lit * 1.15 + rim * lit * 0.16);
+    col = col + float3(edgeLine * lit * 1.5 + rim * lit * 0.22);
+    col = col + sharpC * rim * 0.35;                       // borda brilha com a cor da imagem
+    float edge2 = 1.0 - smoothstep(0.0, 2.5, abs(d + 9.0));
+    col = col + float3(edge2 * lit * 0.35);                // segunda linha fina por dentro
     float softSh = exp(min(d, 0.0) / 20.0);
     col = col * (1.0 - 0.12 * softSh * (0.5 - 0.5 * dl));
     col = col + float3(0.03 * softSh * max(dl, 0.0));
@@ -459,7 +463,7 @@ object GlassHost {
     private fun build(l: Launcher, bmp: Bitmap) {
         val d = l.resources.displayMetrics.density
 
-        val panel = GlassView(l).apply { setWallpaper(bmp); dark = 0.14f; alpha = 0f }
+        val panel = GlassView(l).apply { setWallpaper(bmp); dark = 0.05f; alpha = 0f }
         val dock = GlassView(l).apply { setWallpaper(bmp); cornerPx = 34 * d }
         val drag = l.dragLayer
         listOf(dock, panel).forEach { v ->
