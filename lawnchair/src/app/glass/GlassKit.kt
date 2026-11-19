@@ -486,7 +486,7 @@ object GlassHost {
         controller?.onResume()
         host?.let { l ->
             onWallpaperMaybeChanged(l)
-            l.window.decorView.postDelayed({ captureLive(l) }, 250)
+            l.workspace.postDelayed({ captureLive(l) }, 250)
         }
     }
 
@@ -510,7 +510,7 @@ object GlassHost {
         val hide = listOf<View>(ws, hs) + views
         val saved = hide.map { it.alpha }
         if (!alreadyHidden) hide.forEach { it.animate().cancel(); it.alpha = 0f }
-        l.window.decorView.postDelayed({
+        l.workspace.postDelayed({
             Thread {
                 val bmp = screenshot()
                 try { File(l.filesDir, "glass_wp.txt").writeText("live fonte=screencap ok=${bmp != null}") } catch (_: Throwable) {}
