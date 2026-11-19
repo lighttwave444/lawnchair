@@ -70,17 +70,17 @@ half4 main(float2 p) {
     float cov = clamp(0.5 - d, 0.0, 1.0);
     float dropSh = exp(-max(d, 0.0) / 22.0) * 0.28 * (1.0 - cov);
 
-    float bevel = 52.0;
+    float bevel = 76.0;
     float t = clamp(-d / bevel, 0.0, 1.0);
     float2 ex = float2(1.0, 0.0);
     float2 ey = float2(0.0, 1.0);
     float2 g = float2(sdf(p + ex) - sdf(p - ex), sdf(p + ey) - sdf(p - ey));
     float2 n = g / max(length(g), 0.0001);
 
-    float rim = pow(1.0 - t, 3.0);
+    float rim = pow(1.0 - t, 2.2);
     float2 zp = center + (p - center) / zoom;
-    float2 sp = zp - n * rim * 42.0;
-    float ca = 4.5 * rim;
+    float2 sp = zp - n * rim * 64.0;
+    float ca = 1.5 * rim;
 
     float4 s1 = float4(bgSharp.eval(sp + n * ca));
     float4 s2 = float4(bgSharp.eval(sp));
@@ -100,7 +100,6 @@ half4 main(float2 p) {
     float softSh = exp(min(d, 0.0) / 20.0);
     col = col * (1.0 - 0.12 * softSh * (0.5 - 0.5 * dl));
     col = col + float3(0.10 * softSh * max(dl, 0.0));
-    col = col + float3((hash21(p) - 0.5) * 0.035 * smoothstep(0.0, 0.9, t));
     col = col * (1.0 - dark);
 
     float a = cov * alpha;
@@ -159,6 +158,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
     private var sharp: BitmapShader? = null
     private var blur: BitmapShader? = null
     private var blurScale = 1f
+    private var sharpScale = 1f
     private val loc = IntArray(2)
     private val m = Matrix()
 
@@ -180,13 +180,56 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
     fun setWallpaper(src: Bitmap) {
         val dm = resources.displayMetrics
         val full = centerCrop(src, dm.widthPixels, dm.heightPixels)
-        val small = fastBlur(full)
-        sharp = BitmapShader(full, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
+        // reduz de 2 em 2 (média exata, sem serrilhado) e borra de verdade
+        val half = Bitmap.createScaledBitmap(full, max(1, full.width / 2), max(1, full.height / 2), true)
+        val quarter = Bitmap.createScaledBitmap(half, max(1, half.width / 2), max(1, half.height / 2), true)
+        val light = boxBlur(half, 2, 2)      // borda: levemente suave, sem ruído
+        val strong = boxBlur(quarter, 7, 3)  // miolo: bem desfocado e limpo
+        sharp = BitmapShader(light, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
             .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
-        blur = BitmapShader(small, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
+        blur = BitmapShader(strong, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
             .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
-        blurScale = full.width.toFloat() / small.width
+        sharpScale = full.width.toFloat() / light.width
+        blurScale = full.width.toFloat() / strong.width
         invalidate()
+    }
+
+    private fun boxBlur(src: Bitmap, radius: Int, passes: Int): Bitmap {
+        val w = src.width; val h = src.height
+        val px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        val ch = Array(3) { IntArray(w * h) }
+        for (i in px.indices) {
+            val c = px[i]
+            ch[0][i] = (c shr 16) and 255; ch[1][i] = (c shr 8) and 255; ch[2][i] = c and 255
+        }
+        val tmp = IntArray(w * h)
+        for (c in 0..2) repeat(passes) {
+            blurLine(ch[c], tmp, w, h, radius, true)
+            blurLine(tmp, ch[c], w, h, radius, false)
+        }
+        for (i in px.indices) px[i] = (255 shl 24) or (ch[0][i] shl 16) or (ch[1][i] shl 8) or ch[2][i]
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(px, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    private fun blurLine(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int, horizontal: Boolean) {
+        val len = if (horizontal) w else h
+        val lines = if (horizontal) h else w
+        val div = 2 * r + 1
+        for (line in 0 until lines) {
+            val base = if (horizontal) line * w else line
+            val step = if (horizontal) 1 else w
+            var sum = 0
+            for (k in -r..r) sum += src[base + k.coerceIn(0, len - 1) * step]
+            for (k in 0 until len) {
+                dst[base + k * step] = (sum + div / 2) / div
+                val add = (k + r + 1).coerceAtMost(len - 1)
+                val rem = (k - r).coerceAtLeast(0)
+                sum += src[base + add * step] - src[base + rem * step]
+            }
+        }
     }
 
     private var broken = false
@@ -208,7 +251,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         getLocationOnScreen(loc)
         val lx = loc[0].toFloat(); val ly = loc[1].toFloat()
 
-        m.setTranslate(-lx, -ly); s.setLocalMatrix(m)
+        m.setScale(sharpScale, sharpScale); m.postTranslate(-lx, -ly); s.setLocalMatrix(m)
         m.setScale(blurScale, blurScale); m.postTranslate(-lx, -ly); b.setLocalMatrix(m)
         rt.setInputShader("bgSharp", s)
         rt.setInputShader("bgBlur", b)
@@ -486,7 +529,8 @@ object GlassHost {
         controller?.onResume()
         host?.let { l ->
             onWallpaperMaybeChanged(l)
-            l.workspace.postDelayed({ captureLive(l) }, 250)
+            l.workspace.postDelayed({ captureLive(l) }, 500)
+            l.workspace.postDelayed({ captureLive(l) }, 2500)
         }
     }
 
@@ -501,25 +545,23 @@ object GlassHost {
         if (views.isEmpty() || !isLive(l) || !l.hasWindowFocus()) return
         val now = SystemClock.uptimeMillis()
         if (now - lastCapture < 15000) return
-        val ws = l.workspace; val hs = l.hotseat
-        val a = ws.alpha
-        val alreadyHidden = a < 0.05f              // logo após desbloquear: já está escondido
-        if (!alreadyHidden && a < 0.99f) return    // no meio de uma animação: tenta depois
+        val ws = l.workspace
+        if (ws.alpha < 0.99f || drawerOpen) return      // só com a tela inicial parada e visível
         lastCapture = now
 
-        val hide = listOf<View>(ws, hs) + views
-        val saved = hide.map { it.alpha }
-        if (!alreadyHidden) hide.forEach { it.animate().cancel(); it.alpha = 0f }
-        l.workspace.postDelayed({
+        val ui = l.dragLayer                            // toda a interface (ícones, widgets, dock, vidro)
+        val prev = ui.visibility
+        ui.visibility = View.INVISIBLE
+        ws.postDelayed({
             Thread {
                 val bmp = screenshot()
                 try { File(l.filesDir, "glass_wp.txt").writeText("live fonte=screencap ok=${bmp != null}") } catch (_: Throwable) {}
                 l.runOnUiThread {
-                    if (!alreadyHidden) hide.forEachIndexed { i, v -> v.alpha = saved[i] }
+                    ui.visibility = prev
                     if (bmp != null) { views.forEach { it.setWallpaper(bmp) }; saveJpeg(l, bmp) }
                 }
             }.start()
-        }, if (alreadyHidden) 0L else 220L)
+        }, 450L)
     }
 
     private fun screenshot(): Bitmap? = try {
