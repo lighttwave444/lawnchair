@@ -358,6 +358,7 @@ object GlassHost {
     private val drawerRect = Rect()
     private var drawerRadius = 0f
     private var wpReceiver: BroadcastReceiver? = null
+    private var lastCapture = 0L
     private var posShown = false
 
     fun install(l: Launcher) {
@@ -483,8 +484,50 @@ object GlassHost {
 
     fun onResume() {
         controller?.onResume()
-        host?.let { onWallpaperMaybeChanged(it) }
+        host?.let { l ->
+            onWallpaperMaybeChanged(l)
+            l.window.decorView.postDelayed({ captureLive(l) }, 250)
+        }
     }
+
+    private fun isLive(c: Context): Boolean =
+        try { WallpaperManager.getInstance(c).wallpaperInfo != null } catch (_: Throwable) { false }
+
+    /**
+     * Wallpaper animado não tem arquivo de imagem. Então, por root, tira uma foto da tela
+     * enquanto só o wallpaper está visível (escondendo ícones e vidro por um instante).
+     */
+    private fun captureLive(l: Launcher) {
+        if (views.isEmpty() || !isLive(l) || !l.hasWindowFocus()) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastCapture < 15000) return
+        val ws = l.workspace; val hs = l.hotseat
+        val a = ws.alpha
+        val alreadyHidden = a < 0.05f              // logo após desbloquear: já está escondido
+        if (!alreadyHidden && a < 0.99f) return    // no meio de uma animação: tenta depois
+        lastCapture = now
+
+        val hide = listOf<View>(ws, hs) + views
+        val saved = hide.map { it.alpha }
+        if (!alreadyHidden) hide.forEach { it.animate().cancel(); it.alpha = 0f }
+        l.window.decorView.postDelayed({
+            Thread {
+                val bmp = screenshot()
+                try { File(l.filesDir, "glass_wp.txt").writeText("live fonte=screencap ok=${bmp != null}") } catch (_: Throwable) {}
+                l.runOnUiThread {
+                    if (!alreadyHidden) hide.forEachIndexed { i, v -> v.alpha = saved[i] }
+                    if (bmp != null) { views.forEach { it.setWallpaper(bmp) }; saveJpeg(l, bmp) }
+                }
+            }.start()
+        }, if (alreadyHidden) 0L else 220L)
+    }
+
+    private fun screenshot(): Bitmap? = try {
+        val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "screencap -p"))
+        val bytes = p.inputStream.readBytes()
+        p.destroy()
+        if (bytes.size < 5000) null else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    } catch (t: Throwable) { null }
 
     private fun onWallpaperMaybeChanged(l: Launcher) {
         try {
@@ -497,6 +540,7 @@ object GlassHost {
 
     /** Lê o wallpaper atual (API do Android; se bloqueada, por root) fora da thread principal. */
     private fun refreshAsync(l: Launcher, id: Int) {
+        if (isLive(l)) return    // animado: quem cuida é o captureLive()
         val prefs = l.getSharedPreferences("glass", Context.MODE_PRIVATE)
         val hasFile = File(l.filesDir, "glass_wallpaper.jpg").exists()
         if (hasFile && prefs.getInt("wpid", Int.MIN_VALUE) == id) return   // já é a imagem atual
