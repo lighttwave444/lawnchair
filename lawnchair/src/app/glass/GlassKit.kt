@@ -46,6 +46,7 @@ uniform float wobble;
 uniform float time;
 uniform float alpha;
 uniform float zoom;
+uniform float dark;
 
 float sdf(float2 p) {
     float2 q = p - center;
@@ -99,6 +100,7 @@ half4 main(float2 p) {
     col = col * (1.0 - 0.12 * softSh * (0.5 - 0.5 * dl));
     col = col + float3(0.10 * softSh * max(dl, 0.0));
     col = col + float3((hash21(p) - 0.5) * 0.035 * smoothstep(0.0, 0.9, t));
+    col = col * (1.0 - dark);
 
     float a = cov * alpha;
     float outA = min(a + dropSh * alpha, 1.0);
@@ -119,6 +121,7 @@ uniform float wobble;
 uniform float time;
 uniform float alpha;
 uniform float zoom;
+uniform float dark;
 
 half4 main(float2 p) {
     float2 q = p - center;
@@ -167,6 +170,8 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
     var startHalf = PointF(110 * dp, 110 * dp)
 
     /** 0 = bolha, 1 = painel final. Passa de 1 no overshoot (efeito gelatina). */
+    /** 0 = vidro claro, 1 = preto. Usado na gaveta pra letras ficarem legíveis. */
+    var dark = 0f
     var progress = 1f
         set(v) { field = v; invalidate() }
 
@@ -230,6 +235,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         rt.setFloatUniform("time", (SystemClock.uptimeMillis() % 100000L) / 1000f)
         rt.setFloatUniform("alpha", (k / 0.25f).coerceIn(0f, 1f))
         rt.setFloatUniform("zoom", 1.0f + 0.12f * k.coerceAtMost(1f))
+        rt.setFloatUniform("dark", dark)
 
         canvas.drawRect(0f, 0f, w, h, paint)
         if (k < 1f) postInvalidateOnAnimation()   // mantém a bolha "viva"
@@ -394,7 +400,7 @@ object GlassHost {
     private fun build(l: Launcher, bmp: Bitmap) {
         val d = l.resources.displayMetrics.density
 
-        val panel = GlassView(l).apply { setWallpaper(bmp) }
+        val panel = GlassView(l).apply { setWallpaper(bmp); dark = 0.30f; alpha = 0f }
         val dock = GlassView(l).apply { setWallpaper(bmp); cornerPx = 34 * d }
         val drag = l.dragLayer
         listOf(dock, panel).forEach { v ->
@@ -407,12 +413,16 @@ object GlassHost {
         drag.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> position(l, panel, dock) }
         drag.post { position(l, panel, dock) }
 
+        // Tela inicial: só o dock de vidro. Gaveta aberta: só o vidro grande (fundo da gaveta).
+        fun applyState(st: LauncherState) {
+            val panelA = if (st == LauncherState.ALL_APPS) 1f else 0f
+            val dockA = if (st == LauncherState.NORMAL) 1f else 0f
+            panel.animate().alpha(panelA).setDuration(220).start()
+            dock.animate().alpha(dockA).setDuration(220).start()
+        }
         l.stateManager.addStateListener(object : StateManager.StateListener<LauncherState> {
-            override fun onStateTransitionStart(toState: LauncherState) {
-                val a = if (toState == LauncherState.NORMAL) 1f else 0f
-                views.forEach { it.animate().alpha(a).setDuration(200).start() }
-            }
-            override fun onStateTransitionComplete(finalState: LauncherState) {}
+            override fun onStateTransitionStart(toState: LauncherState) { applyState(toState) }
+            override fun onStateTransitionComplete(finalState: LauncherState) { applyState(finalState) }
         })
 
         controller = GlassUnlockController(l, views, listOf(l.workspace, l.hotseat)).also { it.attach() }
@@ -431,22 +441,9 @@ object GlassHost {
         // Medidas tiradas do print de referência (720x1612), em proporção da tela
         panel.cornerPx = 0.095f * w
         dock.cornerPx = 0.100f * w
-        // Painel acompanha a grade real de ícones (se falhar, usa as medidas do print)
-        var pL = 0.053f * w; var pT = 0.099f * h; var pR = 0.947f * w; var pB = 0.775f * h
-        try {
-            val cl = l.workspace.getChildAt(l.workspace.currentPage) as? CellLayout
-            val sc = cl?.shortcutsAndWidgets
-            if (sc != null && sc.width > 0 && sc.height > 0) {
-                val a = IntArray(2); val b = IntArray(2)
-                sc.getLocationInWindow(a); drag.getLocationInWindow(b)
-                val x = (a[0] - b[0]).toFloat(); val y = (a[1] - b[1]).toFloat()
-                pL = max(0.02f * w, x - 10 * d)
-                pR = min(0.98f * w, x + sc.width + 10 * d)
-                pT = max(0.04f * h, y - 14 * d)
-                pB = min(0.845f * h - 6 * d, y + sc.height + 14 * d)
-            }
-        } catch (_: Throwable) {}
-        place(panel, pL, pT, pR, pB)
+        // Painel = fundo da gaveta de apps (só aparece quando a gaveta abre)
+        panel.cornerPx = 0.085f * w
+        place(panel, 0.02f * w, 0.065f * h, 0.98f * w, 0.992f * h)
         place(dock, 0.056f * w, 0.851f * h, 0.944f * w, 0.969f * h)
         val hs = l.hotseat
         val wp = l.deviceProfile.workspacePadding
