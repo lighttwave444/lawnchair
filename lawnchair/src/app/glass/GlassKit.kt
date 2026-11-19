@@ -48,6 +48,7 @@ uniform float time;
 uniform float alpha;
 uniform float zoom;
 uniform float dark;
+uniform float bevel;
 
 float sdf(float2 p) {
     float2 q = p - center;
@@ -70,7 +71,6 @@ half4 main(float2 p) {
     float cov = clamp(0.5 - d, 0.0, 1.0);
     float dropSh = exp(-max(d, 0.0) / 22.0) * 0.28 * (1.0 - cov);
 
-    float bevel = 76.0;
     float t = clamp(-d / bevel, 0.0, 1.0);
     float2 ex = float2(1.0, 0.0);
     float2 ey = float2(0.0, 1.0);
@@ -79,7 +79,7 @@ half4 main(float2 p) {
 
     float rim = pow(1.0 - t, 2.2);
     float2 zp = center + (p - center) / zoom;
-    float2 sp = zp - n * rim * 64.0;
+    float2 sp = zp - n * rim * (bevel * 0.85);
     float ca = 1.5 * rim;
 
     float4 s1 = float4(bgSharp.eval(sp + n * ca));
@@ -87,21 +87,21 @@ half4 main(float2 p) {
     float4 s3 = float4(bgSharp.eval(sp - n * ca));
     float3 sharpC = float3(s1.r, s2.g, s3.b);
     float3 blurC = float3(float4(bgBlur.eval(sp)).rgb);
-    float3 col = mix(sharpC, blurC, smoothstep(0.0, 0.7, t) * 0.75);
+    float3 col = mix(sharpC, blurC, smoothstep(0.0, 0.7, t) * 0.6);
 
     float lum = dot(col, float3(0.299, 0.587, 0.114));
     col = mix(float3(lum), col, 1.22);
-    col = col * 1.12;
+    col = col * 1.04;
     float2 L = normalize(float2(-0.6, -0.8));
     float dl = dot(n, L);
     float lit = 0.25 + 0.75 * pow(abs(dl), 2.0);
     float edgeLine = 1.0 - smoothstep(0.0, 2.0, abs(d + 1.0));
     float innerSh = exp(min(d, 0.0) / 7.0);
     col = col * (1.0 - 0.16 * innerSh * (1.0 - lit));
-    col = col + float3(edgeLine * lit * 1.5 + rim * lit * 0.22);
-    col = col + sharpC * rim * 0.35;                       // borda brilha com a cor da imagem
+    col = col + float3(edgeLine * lit * 0.95 + rim * lit * 0.10);
+    col = col + sharpC * rim * 0.12;                       // borda brilha com a cor da imagem
     float edge2 = 1.0 - smoothstep(0.0, 2.5, abs(d + 9.0));
-    col = col + float3(edge2 * lit * 0.35);                // segunda linha fina por dentro
+    col = col + float3(edge2 * lit * 0.18);                // segunda linha fina por dentro
     float softSh = exp(min(d, 0.0) / 20.0);
     col = col * (1.0 - 0.12 * softSh * (0.5 - 0.5 * dl));
     col = col + float3(0.03 * softSh * max(dl, 0.0));
@@ -127,6 +127,7 @@ uniform float time;
 uniform float alpha;
 uniform float zoom;
 uniform float dark;
+uniform float bevel;
 
 half4 main(float2 p) {
     float2 q = p - center;
@@ -178,6 +179,8 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
     /** 0 = bolha, 1 = painel final. Passa de 1 no overshoot (efeito gelatina). */
     /** 0 = vidro claro, 1 = preto. Usado na gaveta pra letras ficarem legíveis. */
     var dark = 0f
+    /** Quanto o miolo amplia a imagem (lente). O dock é baixinho, então amplia mais. */
+    var zoomAmt = 0.12f
     var progress = 1f
         set(v) { field = v; invalidate() }
 
@@ -189,7 +192,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         val half = Bitmap.createScaledBitmap(full, max(1, full.width / 2), max(1, full.height / 2), true)
         val quarter = Bitmap.createScaledBitmap(half, max(1, half.width / 2), max(1, half.height / 2), true)
         val light = boxBlur(half, 2, 2)      // borda: levemente suave, sem ruído
-        val strong = boxBlur(quarter, 3, 3)  // miolo: desfoque moderado, imagem ainda reconhecível
+        val strong = boxBlur(quarter, 2, 3)  // miolo: desfoque moderado, imagem ainda reconhecível
         sharp = BitmapShader(light, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
             .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
         blur = BitmapShader(strong, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
@@ -283,8 +286,9 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         rt.setFloatUniform("wobble", wob)
         rt.setFloatUniform("time", (SystemClock.uptimeMillis() % 100000L) / 1000f)
         rt.setFloatUniform("alpha", (k / 0.25f).coerceIn(0f, 1f))
-        rt.setFloatUniform("zoom", 1.0f + 0.12f * k.coerceAtMost(1f))
+        rt.setFloatUniform("zoom", 1.0f + zoomAmt * k.coerceAtMost(1f))
         rt.setFloatUniform("dark", dark)
+        rt.setFloatUniform("bevel", min(76f, 0.45f * min(hx, hy)).coerceAtLeast(8f))
 
         canvas.drawRect(0f, 0f, w, h, paint)
         if (k < 1f) postInvalidateOnAnimation()   // mantém a bolha "viva"
@@ -463,8 +467,8 @@ object GlassHost {
     private fun build(l: Launcher, bmp: Bitmap) {
         val d = l.resources.displayMetrics.density
 
-        val panel = GlassView(l).apply { setWallpaper(bmp); dark = 0.05f; alpha = 0f }
-        val dock = GlassView(l).apply { setWallpaper(bmp); cornerPx = 34 * d }
+        val panel = GlassView(l).apply { setWallpaper(bmp); dark = 0.05f; alpha = 0f; zoomAmt = 0.06f }
+        val dock = GlassView(l).apply { setWallpaper(bmp); cornerPx = 34 * d; zoomAmt = 0.35f }
         val drag = l.dragLayer
         listOf(dock, panel).forEach { v ->
             drag.addView(v, 1, FrameLayout.LayoutParams(1, 1))   // atrás do workspace
