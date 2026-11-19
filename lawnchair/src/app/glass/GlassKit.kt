@@ -22,6 +22,7 @@ import com.android.launcher3.LauncherState
 import com.android.launcher3.statemanager.StateManager
 import android.util.AttributeSet
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.animation.OvershootInterpolator
 import androidx.annotation.RequiresApi
 import kotlin.math.max
@@ -351,6 +352,12 @@ object GlassHost {
     private const val REQ_PICK = 7391
     private var installed = false
     private var drawerOpen = false
+    private var host: Launcher? = null
+    private var wallId = -1
+    private var appsView: View? = null
+    private val drawerRect = Rect()
+    private var drawerRadius = 0f
+    private var wpReceiver: BroadcastReceiver? = null
     private var posShown = false
 
     fun install(l: Launcher) {
@@ -376,9 +383,10 @@ object GlassHost {
         if (req != REQ_PICK) return false
         val uri = data?.data
         if (res == Activity.RESULT_OK && uri != null && saveFromUri(l, uri)) {
-            loadWallpaper(l)?.let { bmp ->
+            fileWallpaper(l)?.let { bmp ->
                 try { WallpaperManager.getInstance(l).setBitmap(bmp) } catch (_: Throwable) {}
-                try { build(l, bmp); installed = true } catch (t: Throwable) { Log.e("GlassHost", "falhou", t) }
+                if (installed) views.forEach { it.setWallpaper(bmp) }
+                else try { build(l, bmp); installed = true } catch (t: Throwable) { Log.e("GlassHost", "falhou", t) }
             }
         }
         return true
@@ -409,6 +417,33 @@ object GlassHost {
             (v.layoutParams as? InsettableFrameLayout.LayoutParams)?.ignoreInsets = true
         }
         views = listOf(panel, dock)
+        host = l
+        try { wallId = WallpaperManager.getInstance(l).getWallpaperId(WallpaperManager.FLAG_SYSTEM) } catch (_: Throwable) {}
+
+        // Gaveta: recorta o conteúdo no formato do vidro (nenhum app fica metade pra fora)
+        try {
+            val id = l.resources.getIdentifier("apps_view", "id", l.packageName)
+            val apps = if (id != 0) l.findViewById<View>(id) else null
+            if (apps != null) {
+                apps.clipToOutline = true
+                apps.outlineProvider = object : ViewOutlineProvider() {
+                    override fun getOutline(v: View, o: Outline) {
+                        if (drawerRect.isEmpty) o.setRect(0, 0, v.width, v.height)
+                        else o.setRoundRect(drawerRect, drawerRadius)
+                    }
+                }
+                appsView = apps
+            }
+        } catch (t: Throwable) { Log.e("GlassHost", "clip da gaveta falhou", t) }
+
+        // Wallpaper trocado em qualquer app (Google Fotos etc.): o vidro acompanha
+        try {
+            val r = object : BroadcastReceiver() {
+                override fun onReceive(c: Context, i: Intent) { onWallpaperMaybeChanged(l) }
+            }
+            wpReceiver = r
+            l.registerReceiver(r, IntentFilter(Intent.ACTION_WALLPAPER_CHANGED), Context.RECEIVER_EXPORTED)
+        } catch (t: Throwable) { Log.e("GlassHost", "receiver de wallpaper falhou", t) }
         Log.i("GlassHost", "build ok: views adicionadas")
 
         drag.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> position(l, panel, dock) }
@@ -440,9 +475,30 @@ object GlassHost {
         controller = GlassUnlockController(l, views, listOf(l.workspace, l.hotseat)).also { it.attach() }
     }
 
-    fun onResume() { controller?.onResume() }
+    fun onResume() {
+        controller?.onResume()
+        host?.let { onWallpaperMaybeChanged(it) }
+    }
 
-    fun uninstall() { controller?.detach(); controller = null; installed = false }
+    private fun onWallpaperMaybeChanged(l: Launcher) {
+        try {
+            val id = WallpaperManager.getInstance(l).getWallpaperId(WallpaperManager.FLAG_SYSTEM)
+            if (id == wallId) return
+            wallId = id
+            val bmp = systemWallpaper(l)
+            if (bmp != null) {
+                views.forEach { it.setWallpaper(bmp) }      // leitura liberada: acompanha sozinho
+            } else {
+                askForImage(l)                              // Android bloqueou: pede a imagem de novo
+            }
+        } catch (t: Throwable) { Log.e("GlassHost", "troca de wallpaper falhou", t) }
+    }
+
+    fun uninstall() {
+        controller?.detach(); controller = null; installed = false
+        try { wpReceiver?.let { host?.unregisterReceiver(it) } } catch (_: Throwable) {}
+        wpReceiver = null; host = null; appsView = null
+    }
 
     private fun position(l: Launcher, panel: GlassView, dock: GlassView) {
         val drag = l.dragLayer
@@ -456,6 +512,9 @@ object GlassHost {
         // Painel = fundo da gaveta de apps (só aparece quando a gaveta abre)
         panel.cornerPx = 0.085f * w
         place(panel, 0.02f * w, 0.065f * h, 0.98f * w, 0.992f * h)
+        drawerRect.set((0.02f * w).toInt(), (0.065f * h).toInt(), (0.98f * w).toInt(), (0.992f * h).toInt())
+        drawerRadius = panel.cornerPx
+        appsView?.invalidateOutline()
         place(dock, 0.056f * w, 0.851f * h, 0.944f * w, 0.969f * h)
         val hs = l.hotseat
         val wp = l.deviceProfile.workspacePadding
@@ -477,14 +536,16 @@ object GlassHost {
         v.layoutParams = lp   // mesmo objeto (subclasse do Launcher), só dispara novo layout
     }
 
-    private fun loadWallpaper(c: Context): Bitmap? {
-        try {   // 1) imagem escolhida por você
-            val f = File(c.filesDir, "glass_wallpaper.jpg")
-            if (f.exists()) BitmapFactory.decodeFile(f.path)?.let { return it }
-        } catch (_: Throwable) {}
-        return try {   // 2) wallpaper do sistema (pode ser bloqueado pelo Android)
-            val dr = WallpaperManager.getInstance(c).drawable
-            (dr as? BitmapDrawable)?.bitmap ?: dr?.toBitmap()
-        } catch (t: Throwable) { null }
-    }
+    private fun systemWallpaper(c: Context): Bitmap? = try {
+        val dr = WallpaperManager.getInstance(c).drawable
+        (dr as? BitmapDrawable)?.bitmap ?: dr?.toBitmap()
+    } catch (t: Throwable) { null }
+
+    private fun fileWallpaper(c: Context): Bitmap? = try {
+        val f = File(c.filesDir, "glass_wallpaper.jpg")
+        if (f.exists()) BitmapFactory.decodeFile(f.path) else null
+    } catch (_: Throwable) { null }
+
+    /** 1) o wallpaper de verdade (de qualquer app); 2) imagem escolhida no seletor do launcher. */
+    private fun loadWallpaper(c: Context): Bitmap? = systemWallpaper(c) ?: fileWallpaper(c)
 }
