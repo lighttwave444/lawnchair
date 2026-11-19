@@ -15,6 +15,7 @@ import android.os.SystemClock
 import android.widget.FrameLayout
 import android.graphics.drawable.BitmapDrawable
 import androidx.core.graphics.drawable.toBitmap
+import com.android.launcher3.CellLayout
 import com.android.launcher3.InsettableFrameLayout
 import com.android.launcher3.Launcher
 import com.android.launcher3.LauncherState
@@ -430,7 +431,22 @@ object GlassHost {
         // Medidas tiradas do print de referência (720x1612), em proporção da tela
         panel.cornerPx = 0.095f * w
         dock.cornerPx = 0.100f * w
-        place(panel, 0.053f * w, 0.099f * h, 0.947f * w, 0.775f * h)
+        // Painel acompanha a grade real de ícones (se falhar, usa as medidas do print)
+        var pL = 0.053f * w; var pT = 0.099f * h; var pR = 0.947f * w; var pB = 0.775f * h
+        try {
+            val cl = l.workspace.getChildAt(l.workspace.currentPage) as? CellLayout
+            val sc = cl?.shortcutsAndWidgets
+            if (sc != null && sc.width > 0 && sc.height > 0) {
+                val a = IntArray(2); val b = IntArray(2)
+                sc.getLocationInWindow(a); drag.getLocationInWindow(b)
+                val x = (a[0] - b[0]).toFloat(); val y = (a[1] - b[1]).toFloat()
+                pL = max(0.02f * w, x - 10 * d)
+                pR = min(0.98f * w, x + sc.width + 10 * d)
+                pT = max(0.04f * h, y - 14 * d)
+                pB = min(0.845f * h - 6 * d, y + sc.height + 14 * d)
+            }
+        } catch (_: Throwable) {}
+        place(panel, pL, pT, pR, pB)
         place(dock, 0.056f * w, 0.851f * h, 0.944f * w, 0.969f * h)
         val hs = l.hotseat
         val wp = l.deviceProfile.workspacePadding
