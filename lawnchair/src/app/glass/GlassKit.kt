@@ -364,7 +364,7 @@ object GlassHost {
         if (Build.VERSION.SDK_INT < 33 || installed) return
         val bmp = loadWallpaper(l)
         Log.i("GlassHost", "install: bmp=${bmp?.width}x${bmp?.height}")
-        if (bmp == null) { askForImage(l); return }   // Android bloqueou o wallpaper: pede a imagem
+        if (bmp == null) { tryRootThenPick(l); return }   // API bloqueada: tenta root, senão pede a imagem
         try { build(l, bmp); installed = true } catch (t: Throwable) {
             Log.e("GlassHost", "falhou", t); glassToast(l, "Glass ERRO build: ${t.javaClass.simpleName}: ${t.message}")
         }
@@ -385,6 +385,11 @@ object GlassHost {
         if (res == Activity.RESULT_OK && uri != null && saveFromUri(l, uri)) {
             fileWallpaper(l)?.let { bmp ->
                 try { WallpaperManager.getInstance(l).setBitmap(bmp) } catch (_: Throwable) {}
+                try {
+                    val nid = WallpaperManager.getInstance(l).getWallpaperId(WallpaperManager.FLAG_SYSTEM)
+                    wallId = nid
+                    l.getSharedPreferences("glass", Context.MODE_PRIVATE).edit().putInt("wpid", nid).putInt("asked", nid).apply()
+                } catch (_: Throwable) {}
                 if (installed) views.forEach { it.setWallpaper(bmp) }
                 else try { build(l, bmp); installed = true } catch (t: Throwable) { Log.e("GlassHost", "falhou", t) }
             }
@@ -419,6 +424,7 @@ object GlassHost {
         views = listOf(panel, dock)
         host = l
         try { wallId = WallpaperManager.getInstance(l).getWallpaperId(WallpaperManager.FLAG_SYSTEM) } catch (_: Throwable) {}
+        refreshAsync(l, wallId)
 
         // Gaveta: recorta o conteúdo no formato do vidro (nenhum app fica metade pra fora)
         try {
@@ -485,13 +491,64 @@ object GlassHost {
             val id = WallpaperManager.getInstance(l).getWallpaperId(WallpaperManager.FLAG_SYSTEM)
             if (id == wallId) return
             wallId = id
-            val bmp = systemWallpaper(l)
-            if (bmp != null) {
-                views.forEach { it.setWallpaper(bmp) }      // leitura liberada: acompanha sozinho
-            } else {
-                askForImage(l)                              // Android bloqueou: pede a imagem de novo
-            }
+            refreshAsync(l, id)
         } catch (t: Throwable) { Log.e("GlassHost", "troca de wallpaper falhou", t) }
+    }
+
+    /** Lê o wallpaper atual (API do Android; se bloqueada, por root) fora da thread principal. */
+    private fun refreshAsync(l: Launcher, id: Int) {
+        val prefs = l.getSharedPreferences("glass", Context.MODE_PRIVATE)
+        val hasFile = File(l.filesDir, "glass_wallpaper.jpg").exists()
+        if (hasFile && prefs.getInt("wpid", Int.MIN_VALUE) == id) return   // já é a imagem atual
+        Thread {
+            var src = "api"
+            var bmp = systemWallpaper(l)
+            if (bmp == null) { src = "root"; bmp = rootWallpaper() }
+            try { File(l.filesDir, "glass_wp.txt").writeText("id=$id fonte=$src ok=${bmp != null}") } catch (_: Throwable) {}
+            val got = bmp
+            if (got != null) {
+                saveJpeg(l, got)
+                prefs.edit().putInt("wpid", id).apply()
+                l.runOnUiThread { views.forEach { it.setWallpaper(got) } }
+            } else if (prefs.getInt("asked", Int.MIN_VALUE) != id) {
+                prefs.edit().putInt("asked", id).apply()
+                l.runOnUiThread { askForImage(l) }
+            }
+        }.start()
+    }
+
+    private fun tryRootThenPick(l: Launcher) {
+        Thread {
+            val got = rootWallpaper()
+            try { File(l.filesDir, "glass_wp.txt").writeText("instalacao fonte=root ok=${got != null}") } catch (_: Throwable) {}
+            if (got != null) {
+                saveJpeg(l, got)
+                l.runOnUiThread {
+                    try { build(l, got); installed = true } catch (t: Throwable) { Log.e("GlassHost", "falhou", t) }
+                }
+            } else l.runOnUiThread { askForImage(l) }
+        }.start()
+    }
+
+    /** /data/system/users/0/wallpaper é a imagem que o Android usa de fundo; precisa de root. */
+    private fun rootWallpaper(): Bitmap? = try {
+        val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "cat /data/system/users/0/wallpaper"))
+        val bytes = p.inputStream.readBytes()
+        p.destroy()
+        if (bytes.size < 2000) null else {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var ss = 1
+            while (bounds.outWidth / (ss * 2) >= 1600 && bounds.outHeight / (ss * 2) >= 2800) ss *= 2
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = ss })
+        }
+    } catch (t: Throwable) { null }
+
+    private fun saveJpeg(c: Context, b: Bitmap) {
+        try {
+            val sw = if (b.config == Bitmap.Config.HARDWARE) b.copy(Bitmap.Config.ARGB_8888, false) else b
+            File(c.filesDir, "glass_wallpaper.jpg").outputStream().use { sw.compress(Bitmap.CompressFormat.JPEG, 92, it) }
+        } catch (_: Throwable) {}
     }
 
     fun uninstall() {
