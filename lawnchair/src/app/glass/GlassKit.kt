@@ -419,6 +419,8 @@ object GlassHost {
     private var drawerRadius = 0f
     private var wpReceiver: BroadcastReceiver? = null
     private var lastCapture = 0L
+    private var lastSig = ""
+    private var pendingForce = false
     private var preDraw: ViewTreeObserver.OnPreDrawListener? = null
     private var posShown = false
 
@@ -486,6 +488,7 @@ object GlassHost {
         views = listOf(panel, dock)
         host = l
         try { wallId = WallpaperManager.getInstance(l).getWallpaperId(WallpaperManager.FLAG_SYSTEM) } catch (_: Throwable) {}
+        lastSig = wallSig(l)
         refreshAsync(l, wallId)
 
         // Gaveta: recorta o conteúdo no formato do vidro (nenhum app fica metade pra fora)
@@ -556,8 +559,7 @@ object GlassHost {
         controller?.onResume()
         host?.let { l ->
             onWallpaperMaybeChanged(l)
-            l.workspace.postDelayed({ captureLive(l) }, 500)
-            l.workspace.postDelayed({ captureLive(l) }, 2500)
+            scheduleCapture(l)
         }
     }
 
@@ -577,27 +579,31 @@ object GlassHost {
      * Wallpaper animado não tem arquivo de imagem. Então, por root, tira uma foto da tela
      * enquanto só o wallpaper está visível (escondendo ícones e vidro por um instante).
      */
-    private fun captureLive(l: Launcher) {
-        if (views.isEmpty() || !isLive(l) || !l.hasWindowFocus()) return
+    private fun captureLive(l: Launcher, force: Boolean): Boolean {
+        if (views.isEmpty()) return true
+        if (!force && !isLive(l)) return true                 // imagem estática: o outro caminho cuida
         val now = SystemClock.uptimeMillis()
-        if (now - lastCapture < 15000) return
+        if (!force && now - lastCapture < 45000) return true  // sem piscar toda hora
+        if (!l.hasWindowFocus()) return false
         val ws = l.workspace
-        if (ws.alpha < 0.99f || drawerOpen) return      // só com a tela inicial parada e visível
+        if (ws.alpha < 0.99f || drawerOpen) return false      // só com a tela inicial parada e visível
         lastCapture = now
+        pendingForce = false
 
-        val ui = l.dragLayer                            // toda a interface (ícones, widgets, dock, vidro)
+        val ui = l.dragLayer                                  // toda a interface (ícones, widgets, dock, vidro)
         val prev = ui.visibility
         ui.visibility = View.INVISIBLE
         ws.postDelayed({
             Thread {
                 val bmp = screenshot()
-                try { File(l.filesDir, "glass_wp.txt").writeText("live fonte=screencap ok=${bmp != null}") } catch (_: Throwable) {}
+                try { File(l.filesDir, "glass_wp.txt").writeText("captura force=$force fonte=screencap ok=${bmp != null} t=${System.currentTimeMillis() / 1000}") } catch (_: Throwable) {}
                 l.runOnUiThread {
                     ui.visibility = prev
                     if (bmp != null) { views.forEach { it.setWallpaper(bmp) }; saveJpeg(l, bmp) }
                 }
             }.start()
         }, 450L)
+        return true
     }
 
     private fun screenshot(): Bitmap? = try {
@@ -607,13 +613,32 @@ object GlassHost {
         if (bytes.size < 5000) null else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     } catch (t: Throwable) { null }
 
+    private fun wallSig(c: Context): String = try {
+        val wm = WallpaperManager.getInstance(c)
+        "${wm.getWallpaperId(WallpaperManager.FLAG_SYSTEM)}|${wm.wallpaperInfo?.serviceName ?: ""}"
+    } catch (_: Throwable) { "" }
+
     private fun onWallpaperMaybeChanged(l: Launcher) {
         try {
+            val sg = wallSig(l)
+            if (sg == lastSig) return
+            lastSig = sg
+            pendingForce = true                     // wallpaper trocou: a próxima captura ignora o limite de tempo
             val id = WallpaperManager.getInstance(l).getWallpaperId(WallpaperManager.FLAG_SYSTEM)
-            if (id == wallId) return
             wallId = id
             refreshAsync(l, id)
         } catch (t: Throwable) { Log.e("GlassHost", "troca de wallpaper falhou", t) }
+    }
+
+    /** Tenta várias vezes (a cada 0,7 s) até a tela inicial estar parada e com foco, e então captura. */
+    private fun scheduleCapture(l: Launcher) {
+        var tries = 0
+        fun attempt() {
+            tries++
+            if (tries > 14) return
+            if (!captureLive(l, pendingForce)) l.workspace.postDelayed({ attempt() }, 700)
+        }
+        l.workspace.postDelayed({ attempt() }, 500)
     }
 
     /** Lê o wallpaper atual (API do Android; se bloqueada, por root) fora da thread principal. */
