@@ -22,6 +22,7 @@ import com.android.launcher3.LauncherState
 import com.android.launcher3.statemanager.StateManager
 import android.util.AttributeSet
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewOutlineProvider
 import android.view.ViewTreeObserver
 import android.view.animation.OvershootInterpolator
