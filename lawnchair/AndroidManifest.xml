@@ -214,5 +214,18 @@
             android:name="org.chickenhook.restrictionbypass.BypassProvider"
             android:authorities="${applicationId}.restrictionbypass"
             tools:node="remove"/>
+    
+        <service
+            android:name="app.glass.GlassLockWallpaperService"
+            android:exported="true"
+            android:label="Glass Lock"
+            android:permission="android.permission.BIND_WALLPAPER">
+            <intent-filter>
+                <action android:name="android.service.wallpaper.WallpaperService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.wallpaper"
+                android:resource="@xml/glass_lock_wallpaper" />
+        </service>
     </application>
 </manifest>

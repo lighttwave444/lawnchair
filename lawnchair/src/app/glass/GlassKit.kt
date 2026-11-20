@@ -8,6 +8,10 @@ import android.content.*
 import android.graphics.*
 import android.net.Uri
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.service.wallpaper.WallpaperService
+import android.view.SurfaceHolder
 import android.util.Log
 import android.widget.Toast
 import java.io.File
@@ -293,7 +297,7 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
         rt.setFloatUniform("radius", r)
         rt.setFloatUniform("wobble", wob)
         rt.setFloatUniform("time", (SystemClock.uptimeMillis() % 100000L) / 1000f)
-        rt.setFloatUniform("alpha", (k / 0.25f).coerceIn(0f, 1f))
+        rt.setFloatUniform("alpha", 1f)
         rt.setFloatUniform("zoom", 1.0f + zoomAmt * k.coerceAtMost(1f))
         rt.setFloatUniform("dark", dark)
         rt.setFloatUniform("bevel", min(76f, 0.45f * min(hx, hy)).coerceAtLeast(8f))
@@ -383,7 +387,7 @@ class GlassUnlockController(
         glass.forEachIndexed { i, g ->
             ValueAnimator.ofFloat(0f, 1f).apply {
                 duration = 750
-                startDelay = i * 120L
+                startDelay = 0L
                 interpolator = OvershootInterpolator(0.9f)
                 addUpdateListener { g.progress = it.animatedValue as Float }
             }.start()
@@ -606,8 +610,9 @@ object GlassHost {
         ui.visibility = View.INVISIBLE
         ws.postDelayed({
             Thread {
-                val bmp = screenshot()
-                logWp(l, "captura force=$force fonte=screencap ok=${bmp != null} t=${System.currentTimeMillis() / 1000}")
+                val bmp = screenshot()?.let { fixStatusBar(it) }
+                logWp(l, "captura force=$force fonte=screencap ok=${bmp != null} $lastShotInfo")
+                if (bmp == null) l.runOnUiThread { rootToast(l) }
                 l.runOnUiThread {
                     ui.visibility = prev
                     if (bmp != null) { views.forEach { it.setWallpaper(bmp) }; saveJpeg(l, bmp) }
@@ -617,12 +622,39 @@ object GlassHost {
         return true
     }
 
+    private var lastShotInfo = ""
+    private var lastRootToast = 0L
+
     private fun screenshot(): Bitmap? = try {
         val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "screencap -p"))
         val bytes = p.inputStream.readBytes()
+        val err = try { p.errorStream.readBytes().decodeToString().trim().take(120) } catch (_: Throwable) { "" }
+        val code = try { p.waitFor() } catch (_: Throwable) { -1 }
         p.destroy()
+        lastShotInfo = "exit=$code bytes=${bytes.size} err=[$err]"
         if (bytes.size < 5000) null else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-    } catch (t: Throwable) { null }
+    } catch (t: Throwable) {
+        lastShotInfo = "excecao ${t.javaClass.simpleName}: ${t.message?.take(100)}"
+        null
+    }
+
+    /** Aviso na tela (no máximo a cada 10 min) quando o root não foi liberado para o launcher. */
+    private fun rootToast(l: Launcher) {
+        val now = SystemClock.uptimeMillis()
+        if (lastRootToast != 0L && now - lastRootToast < 600000L) return
+        lastRootToast = now
+        glassToast(l, "Vidro: sem root pra atualizar a imagem. Ative o Lawnchair no KernelSU > Superusuário.")
+    }
+
+    /** A captura traz os ícones da barra de status no topo; cobre essa faixa com o espelho do que vem logo abaixo. */
+    private fun fixStatusBar(src: Bitmap): Bitmap = try {
+        val out = src.copy(Bitmap.Config.ARGB_8888, true)
+        val sb = (out.height * 0.052f).toInt().coerceAtLeast(1)
+        val c = Canvas(out)
+        val m = Matrix(); m.setScale(1f, -1f); m.postTranslate(0f, 2f * sb)
+        c.save(); c.clipRect(0, 0, out.width, sb); c.concat(m); c.drawBitmap(src, 0f, 0f, null); c.restore()
+        out
+    } catch (_: Throwable) { src }
 
     private fun logWp(c: Context, msg: String) {
         try {
@@ -715,7 +747,8 @@ object GlassHost {
 
     private fun saveJpeg(c: Context, b: Bitmap) {
         try {
-            val sw = if (b.config == Bitmap.Config.HARDWARE) b.copy(Bitmap.Config.ARGB_8888, false) else b
+            val sw0 = if (b.config == Bitmap.Config.HARDWARE) b.copy(Bitmap.Config.ARGB_8888, false) else b
+            val sw = fixStatusBar(sw0)
             File(c.filesDir, "glass_wallpaper.jpg").outputStream().use { sw.compress(Bitmap.CompressFormat.JPEG, 92, it) }
         } catch (_: Throwable) {}
     }
@@ -742,13 +775,13 @@ object GlassHost {
         drawerRect.set((0.02f * w).toInt(), (0.065f * h).toInt(), (0.98f * w).toInt(), (0.992f * h).toInt())
         drawerRadius = panel.cornerPx
         appsView?.invalidateOutline()
-        place(dock, 0.056f * w, 0.851f * h, 0.944f * w, 0.969f * h)
+        placeFull(dock, 0.056f * w, 0.851f * h, 0.944f * w, 0.969f * h)
         val hs = l.hotseat
         val wp = l.deviceProfile.workspacePadding
 
         val cx = drag.width / 2f; val cy = drag.height * 0.45f
         panel.startCenter = PointF(cx, cy); panel.startHalf = PointF(drag.width * 0.34f, drag.width * 0.24f)
-        dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(drag.width * 0.20f, drag.width * 0.10f)
+        dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(drag.width * 0.30f, drag.width * 0.14f)
         val pl = panel.layoutParams as ViewGroup.MarginLayoutParams
         Log.i("GlassHost", "pos drag=${drag.width}x${drag.height} wp=$wp panel=${pl.leftMargin},${pl.topMargin} ${pl.width}x${pl.height} hotseat=${hs.left},${hs.top},${hs.right},${hs.bottom}")
     }
@@ -790,4 +823,170 @@ object GlassHost {
 
     /** 1) o wallpaper de verdade (de qualquer app); 2) imagem escolhida no seletor do launcher. */
     private fun loadWallpaper(c: Context): Bitmap? = systemWallpaper(c) ?: fileWallpaper(c)
+}
+
+
+/* ------------------------------------------------------------------ *
+ * Wallpaper animado SÓ PARA A TELA DE BLOQUEIO: desenha a imagem da tela inicial
+ * (a última captura) com a bolha de vidro ondulando no centro. Ao desbloquear,
+ * o launcher continua a animação da mesma posição e a bolha vira o dock.
+ * ------------------------------------------------------------------ */
+@RequiresApi(33)
+class GlassLockWallpaperService : WallpaperService() {
+
+    override fun onCreateEngine(): Engine = GlassEngine()
+
+    inner class GlassEngine : Engine() {
+        private val handler = Handler(Looper.getMainLooper())
+        private var visibleNow = false
+        private var rt: RuntimeShader? = null
+        private val paint = Paint()
+        private var full: Bitmap? = null
+        private var sharpShader: BitmapShader? = null
+        private var blurShader: BitmapShader? = null
+        private var sharpScale = 1f
+        private var blurScale = 1f
+        private var w = 0
+        private var h = 0
+        private var imgStamp = -1L
+
+        private val tick = object : Runnable {
+            override fun run() {
+                drawFrame()
+                if (visibleNow) handler.postDelayed(this, 16L)
+            }
+        }
+
+        override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+            w = width; h = height
+            loadImage()
+            drawFrame()
+        }
+
+        override fun onVisibilityChanged(visible: Boolean) {
+            visibleNow = visible
+            handler.removeCallbacks(tick)
+            if (visible) { loadImage(); handler.post(tick) }
+        }
+
+        override fun onDestroy() {
+            handler.removeCallbacks(tick)
+            super.onDestroy()
+        }
+
+        private fun loadImage() {
+            if (w <= 0 || h <= 0) return
+            val f = File(applicationContext.filesDir, "glass_wallpaper.jpg")
+            if (!f.exists()) { full = null; return }
+            if (f.lastModified() == imgStamp && full != null) return
+            try {
+                val src = BitmapFactory.decodeFile(f.path) ?: return
+                val img = glassCenterCrop(src, w, h)
+                val half = Bitmap.createScaledBitmap(img, max(1, w / 2), max(1, h / 2), true)
+                val quarter = Bitmap.createScaledBitmap(half, max(1, half.width / 2), max(1, half.height / 2), true)
+                val light = glassBoxBlur(half, 2, 2)
+                val strong = glassBoxBlur(quarter, 2, 3)
+                sharpShader = BitmapShader(light, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
+                    .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
+                blurShader = BitmapShader(strong, Shader.TileMode.MIRROR, Shader.TileMode.MIRROR)
+                    .apply { filterMode = BitmapShader.FILTER_MODE_LINEAR }
+                sharpScale = w.toFloat() / light.width
+                blurScale = w.toFloat() / strong.width
+                full = img
+                imgStamp = f.lastModified()
+            } catch (_: Throwable) {}
+        }
+
+        private fun drawFrame() {
+            val holder = surfaceHolder
+            var canvas: Canvas? = null
+            try {
+                canvas = holder.lockHardwareCanvas()
+                if (canvas == null) return
+                val img = full
+                if (img == null) { canvas.drawColor(Color.BLACK); return }
+                canvas.drawBitmap(img, 0f, 0f, null)
+                drawGlass(canvas)
+            } catch (_: Throwable) {
+            } finally {
+                try { if (canvas != null) holder.unlockCanvasAndPost(canvas) } catch (_: Throwable) {}
+            }
+        }
+
+        private fun drawGlass(canvas: Canvas) {
+            val s = sharpShader ?: return
+            val b = blurShader ?: return
+            val sh = rt ?: try { makeShader(applicationContext).also { rt = it } } catch (_: Throwable) { return }
+            val m = Matrix()
+            m.setScale(sharpScale, sharpScale); s.setLocalMatrix(m)
+            m.setScale(blurScale, blurScale); b.setLocalMatrix(m)
+            sh.setInputShader("bgSharp", s)
+            sh.setInputShader("bgBlur", b)
+
+            val wf = w.toFloat(); val hf = h.toFloat()
+            // mesma bolha de partida do dock no launcher (centro da tela, 0,45 da altura)
+            val hx = 0.30f * wf; val hy = 0.14f * wf
+            val r = min(hx, hy)
+            sh.setFloatUniform("center", wf / 2f, hf * 0.45f)
+            sh.setFloatUniform("halfSize", hx, hy)
+            sh.setFloatUniform("radius", r)
+            sh.setFloatUniform("wobble", r * 0.14f)
+            sh.setFloatUniform("time", (SystemClock.uptimeMillis() % 100000L) / 1000f)
+            sh.setFloatUniform("alpha", 1f)
+            sh.setFloatUniform("zoom", 1.0f)
+            sh.setFloatUniform("dark", 0f)
+            sh.setFloatUniform("bevel", min(76f, 0.45f * min(hx, hy)).coerceAtLeast(8f))
+            paint.shader = sh
+            canvas.drawRect(0f, 0f, wf, hf, paint)
+        }
+    }
+}
+
+private fun glassCenterCrop(src: Bitmap, w: Int, h: Int): Bitmap {
+    val sc = max(w / src.width.toFloat(), h / src.height.toFloat())
+    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    Canvas(out).apply {
+        translate((w - src.width * sc) / 2, (h - src.height * sc) / 2)
+        scale(sc, sc)
+        drawBitmap(src, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
+    }
+    return out
+}
+
+private fun glassBoxBlur(src: Bitmap, radius: Int, passes: Int): Bitmap {
+    val w = src.width; val h = src.height
+    val px = IntArray(w * h)
+    src.getPixels(px, 0, w, 0, 0, w, h)
+    val ch = Array(3) { IntArray(w * h) }
+    for (i in px.indices) {
+        val c = px[i]
+        ch[0][i] = (c shr 16) and 255; ch[1][i] = (c shr 8) and 255; ch[2][i] = c and 255
+    }
+    val tmp = IntArray(w * h)
+    for (c in 0..2) repeat(passes) {
+        glassBlurLine(ch[c], tmp, w, h, radius, true)
+        glassBlurLine(tmp, ch[c], w, h, radius, false)
+    }
+    for (i in px.indices) px[i] = (255 shl 24) or (ch[0][i] shl 16) or (ch[1][i] shl 8) or ch[2][i]
+    val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+    out.setPixels(px, 0, w, 0, 0, w, h)
+    return out
+}
+
+private fun glassBlurLine(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int, horizontal: Boolean) {
+    val len = if (horizontal) w else h
+    val lines = if (horizontal) h else w
+    val div = 2 * r + 1
+    for (line in 0 until lines) {
+        val base = if (horizontal) line * w else line
+        val step = if (horizontal) 1 else w
+        var sum = 0
+        for (k in -r..r) sum += src[base + k.coerceIn(0, len - 1) * step]
+        for (k in 0 until len) {
+            dst[base + k * step] = (sum + div / 2) / div
+            val add = (k + r + 1).coerceAtMost(len - 1)
+            val rem = (k - r).coerceAtLeast(0)
+            sum += src[base + add * step] - src[base + rem * step]
+        }
+    }
 }
