@@ -494,18 +494,17 @@ object GlassHost {
                     }
                 }
                 appsView = apps
-                // Vidro da gaveta logo ABAIXO da gaveta, ou seja, acima do escurecimento do Lawnchair
+                // Vidro como PRIMEIRO FILHO da gaveta: o Lawnchair desenha o fundo marrom antes dos filhos,
+                // então o vidro fica por cima dele e por baixo dos ícones. Acompanha a gaveta sozinho.
                 val oldIdx = drag.indexOfChild(panel)
                 drag.removeView(panel)
-                val idx = drag.indexOfChild(apps)
-                drag.addView(panel, if (idx >= 0) idx else oldIdx.coerceAtLeast(0))
-
-                val pre = ViewTreeObserver.OnPreDrawListener {
-                    try { syncPanelWithDrawer() } catch (_: Throwable) {}
-                    true
+                if (apps is ViewGroup) {
+                    apps.addView(panel, 0, ViewGroup.MarginLayoutParams(1, 1))
+                    panel.alpha = 1f
+                    panel.translationY = 0f
+                } else {
+                    drag.addView(panel, oldIdx.coerceAtLeast(0))
                 }
-                preDraw = pre
-                apps.viewTreeObserver.addOnPreDrawListener(pre)
             }
         } catch (t: Throwable) { Log.e("GlassHost", "clip da gaveta falhou", t) }
 
@@ -561,10 +560,7 @@ object GlassHost {
         val panel = views.firstOrNull() ?: return
         val h = apps.height.toFloat()
         if (h <= 0f) return
-        if (apps.visibility != View.VISIBLE) { panel.alpha = 0f; return }
-        val ty = apps.translationY.coerceAtLeast(0f)
-        panel.translationY = ty
-        panel.alpha = (1f - ty / (0.55f * h)).coerceIn(0f, 1f)
+        panel.alpha = 1f; panel.translationY = 0f   // já é filho da gaveta: anda e some junto com ela
     }
 
     private fun isLive(c: Context): Boolean =
@@ -699,14 +695,17 @@ object GlassHost {
         val cx = drag.width / 2f; val cy = drag.height * 0.45f
         panel.startCenter = PointF(cx, cy); panel.startHalf = PointF(drag.width * 0.34f, drag.width * 0.24f)
         dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(drag.width * 0.20f, drag.width * 0.10f)
-        val pl = panel.layoutParams as FrameLayout.LayoutParams
+        val pl = panel.layoutParams as ViewGroup.MarginLayoutParams
         Log.i("GlassHost", "pos drag=${drag.width}x${drag.height} wp=$wp panel=${pl.leftMargin},${pl.topMargin} ${pl.width}x${pl.height} hotseat=${hs.left},${hs.top},${hs.right},${hs.bottom}")
     }
 
     private fun place(v: GlassView, l: Float, t: Float, r: Float, b: Float) {
-        val lp = v.layoutParams as? FrameLayout.LayoutParams ?: return
+        val lp = v.layoutParams as? ViewGroup.MarginLayoutParams ?: return
         val pad = v.padPx.toInt()
-        val nl = l.toInt() - pad; val nt = t.toInt() - pad
+        val par = v.parent as? ViewGroup
+        val offX = if (par != null && par !== host?.dragLayer) par.paddingLeft else 0
+        val offY = if (par != null && par !== host?.dragLayer) par.paddingTop else 0
+        val nl = l.toInt() - pad - offX; val nt = t.toInt() - pad - offY
         val nw = (r - l).toInt() + 2 * pad; val nh = (b - t).toInt() + 2 * pad
         if (lp.leftMargin == nl && lp.topMargin == nt && lp.width == nw && lp.height == nh) return
         lp.leftMargin = nl; lp.topMargin = nt; lp.width = nw; lp.height = nh
