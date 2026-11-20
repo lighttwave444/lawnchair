@@ -467,7 +467,7 @@ object GlassHost {
     private fun build(l: Launcher, bmp: Bitmap) {
         val d = l.resources.displayMetrics.density
 
-        val panel = GlassView(l).apply { setWallpaper(bmp); dark = 0.05f; alpha = 0f; zoomAmt = 0.06f }
+        val panel = GlassView(l).apply { setWallpaper(bmp); dark = 0.10f; alpha = 0f; zoomAmt = 0.06f }
         val dock = GlassView(l).apply { setWallpaper(bmp); cornerPx = 34 * d; zoomAmt = 0.35f }
         val drag = l.dragLayer
         listOf(dock, panel).forEach { v ->
@@ -492,6 +492,11 @@ object GlassHost {
                     }
                 }
                 appsView = apps
+                // Vidro da gaveta logo ABAIXO da gaveta, ou seja, acima do escurecimento do Lawnchair
+                val oldIdx = drag.indexOfChild(panel)
+                drag.removeView(panel)
+                val idx = drag.indexOfChild(apps)
+                drag.addView(panel, if (idx >= 0) idx else oldIdx.coerceAtLeast(0))
             }
         } catch (t: Throwable) { Log.e("GlassHost", "clip da gaveta falhou", t) }
 
