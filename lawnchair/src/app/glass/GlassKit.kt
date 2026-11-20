@@ -183,6 +183,8 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
     var dark = 0f
     /** Quanto o miolo amplia a imagem (lente). O dock é baixinho, então amplia mais. */
     var zoomAmt = 0.12f
+    /** Se definido, a forma final do vidro é este retângulo (coords de TELA), em vez de a View inteira menos a folga. */
+    var screenTarget: RectF? = null
     var progress = 1f
         set(v) { field = v; invalidate() }
 
@@ -272,10 +274,14 @@ class GlassView @JvmOverloads constructor(c: Context, attrs: AttributeSet? = nul
             Log.i("GlassView", "primeiro draw k=$k size=${width}x${height} loc=${loc[0]},${loc[1]}")
         }
         val w = width.toFloat(); val h = height.toFloat()
-        val thx = (w - 2 * padPx) / 2; val thy = (h - 2 * padPx) / 2
+        val tg = screenTarget
+        val thx = if (tg != null) tg.width() / 2 else (w - 2 * padPx) / 2
+        val thy = if (tg != null) tg.height() / 2 else (h - 2 * padPx) / 2
+        val tcx = if (tg != null) tg.centerX() - lx else w / 2
+        val tcy = if (tg != null) tg.centerY() - ly else h / 2
 
-        val cx = lerp(startCenter.x - lx, w / 2, k)
-        val cy = lerp(startCenter.y - ly, h / 2, k)
+        val cx = lerp(startCenter.x - lx, tcx, k)
+        val cy = lerp(startCenter.y - ly, tcy, k)
         val hx = lerp(startHalf.x, thx, k)
         val hy = lerp(startHalf.y, thy, k)
         val rStart = min(startHalf.x, startHalf.y)
@@ -685,7 +691,7 @@ object GlassHost {
         dock.cornerPx = 0.100f * w
         // Painel = fundo da gaveta de apps (só aparece quando a gaveta abre)
         panel.cornerPx = 0.085f * w
-        place(panel, 0.02f * w, 0.065f * h, 0.98f * w, 0.992f * h)
+        placeFull(panel, 0.02f * w, 0.065f * h, 0.98f * w, 0.992f * h)
         drawerRect.set((0.02f * w).toInt(), (0.065f * h).toInt(), (0.98f * w).toInt(), (0.992f * h).toInt())
         drawerRadius = panel.cornerPx
         appsView?.invalidateOutline()
@@ -698,6 +704,18 @@ object GlassHost {
         dock.startCenter = PointF(cx, cy);  dock.startHalf = PointF(drag.width * 0.20f, drag.width * 0.10f)
         val pl = panel.layoutParams as ViewGroup.MarginLayoutParams
         Log.i("GlassHost", "pos drag=${drag.width}x${drag.height} wp=$wp panel=${pl.leftMargin},${pl.topMargin} ${pl.width}x${pl.height} hotseat=${hs.left},${hs.top},${hs.right},${hs.bottom}")
+    }
+
+    private fun placeFull(v: GlassView, l: Float, t: Float, r: Float, b: Float) {
+        val lp = v.layoutParams as? ViewGroup.MarginLayoutParams ?: return
+        v.screenTarget = RectF(l, t, r, b)
+        if (lp.width != ViewGroup.LayoutParams.MATCH_PARENT || lp.height != ViewGroup.LayoutParams.MATCH_PARENT ||
+            lp.leftMargin != 0 || lp.topMargin != 0) {
+            lp.width = ViewGroup.LayoutParams.MATCH_PARENT; lp.height = ViewGroup.LayoutParams.MATCH_PARENT
+            lp.leftMargin = 0; lp.topMargin = 0
+            v.layoutParams = lp
+        }
+        v.invalidate()
     }
 
     private fun place(v: GlassView, l: Float, t: Float, r: Float, b: Float) {
