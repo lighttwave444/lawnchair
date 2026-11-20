@@ -339,7 +339,7 @@ class GlassUnlockController(
     private val rx = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.action) {
-                Intent.ACTION_SCREEN_OFF -> reset()
+                Intent.ACTION_SCREEN_OFF -> { GlassHost.noteScreenOff(); reset() }
                 Intent.ACTION_USER_PRESENT -> play()
                 Intent.ACTION_SCREEN_ON -> act.window.decorView.postDelayed({ onResume() }, 2500)
             }
@@ -420,6 +420,8 @@ object GlassHost {
     private var wpReceiver: BroadcastReceiver? = null
     private var lastCapture = 0L
     private var lastSig = ""
+    private var leftAt = 0L
+    private var screenWasOff = false
     private var pendingForce = false
     private var preDraw: ViewTreeObserver.OnPreDrawListener? = null
     private var posShown = false
@@ -489,6 +491,11 @@ object GlassHost {
         host = l
         try { wallId = WallpaperManager.getInstance(l).getWallpaperId(WallpaperManager.FLAG_SYSTEM) } catch (_: Throwable) {}
         lastSig = wallSig(l)
+        try {
+            l.workspace.viewTreeObserver.addOnWindowFocusChangeListener { hasFocus ->
+                if (!hasFocus) leftAt = SystemClock.uptimeMillis()
+            }
+        } catch (_: Throwable) {}
         refreshAsync(l, wallId)
 
         // Gaveta: recorta o conteúdo no formato do vidro (nenhum app fica metade pra fora)
@@ -559,6 +566,10 @@ object GlassHost {
         controller?.onResume()
         host?.let { l ->
             onWallpaperMaybeChanged(l)
+            val away = if (leftAt == 0L) 0L else SystemClock.uptimeMillis() - leftAt
+            if (screenWasOff) screenWasOff = false
+            else if (away >= 8000L) pendingForce = true     // voltou de outro app depois de um tempo
+            logWp(l, "resume away=${away / 1000}s force=$pendingForce")
             scheduleCapture(l)
         }
     }
@@ -596,7 +607,7 @@ object GlassHost {
         ws.postDelayed({
             Thread {
                 val bmp = screenshot()
-                try { File(l.filesDir, "glass_wp.txt").writeText("captura force=$force fonte=screencap ok=${bmp != null} t=${System.currentTimeMillis() / 1000}") } catch (_: Throwable) {}
+                logWp(l, "captura force=$force fonte=screencap ok=${bmp != null} t=${System.currentTimeMillis() / 1000}")
                 l.runOnUiThread {
                     ui.visibility = prev
                     if (bmp != null) { views.forEach { it.setWallpaper(bmp) }; saveJpeg(l, bmp) }
@@ -612,6 +623,17 @@ object GlassHost {
         p.destroy()
         if (bytes.size < 5000) null else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     } catch (t: Throwable) { null }
+
+    private fun logWp(c: Context, msg: String) {
+        try {
+            val f = File(c.filesDir, "glass_wp.txt")
+            val old = if (f.exists()) f.readLines().takeLast(7) else emptyList()
+            f.writeText((old + "[${System.currentTimeMillis() / 1000}] $msg").joinToString("\n"))
+        } catch (_: Throwable) {}
+    }
+
+    /** Chamado quando a tela apaga: voltar depois disso é desbloqueio, não "voltei de outro app". */
+    fun noteScreenOff() { screenWasOff = true }
 
     private fun wallSig(c: Context): String = try {
         val wm = WallpaperManager.getInstance(c)
@@ -635,7 +657,7 @@ object GlassHost {
         var tries = 0
         fun attempt() {
             tries++
-            if (tries > 14) return
+            if (tries > 14) { logWp(l, "desistiu: tela inicial sem foco ou em movimento"); return }
             if (!captureLive(l, pendingForce)) l.workspace.postDelayed({ attempt() }, 700)
         }
         l.workspace.postDelayed({ attempt() }, 500)
@@ -651,7 +673,7 @@ object GlassHost {
             var src = "api"
             var bmp = systemWallpaper(l)
             if (bmp == null) { src = "root"; bmp = rootWallpaper() }
-            try { File(l.filesDir, "glass_wp.txt").writeText("id=$id fonte=$src ok=${bmp != null}") } catch (_: Throwable) {}
+            logWp(l, "id=$id fonte=$src ok=${bmp != null}")
             val got = bmp
             if (got != null) {
                 saveJpeg(l, got)
@@ -667,7 +689,7 @@ object GlassHost {
     private fun tryRootThenPick(l: Launcher) {
         Thread {
             val got = rootWallpaper()
-            try { File(l.filesDir, "glass_wp.txt").writeText("instalacao fonte=root ok=${got != null}") } catch (_: Throwable) {}
+            logWp(l, "instalacao fonte=root ok=${got != null}")
             if (got != null) {
                 saveJpeg(l, got)
                 l.runOnUiThread {
