@@ -23,6 +23,7 @@ import com.android.launcher3.statemanager.StateManager
 import android.util.AttributeSet
 import android.view.View
 import android.view.ViewOutlineProvider
+import android.view.ViewTreeObserver
 import android.view.animation.OvershootInterpolator
 import androidx.annotation.RequiresApi
 import kotlin.math.max
@@ -411,6 +412,7 @@ object GlassHost {
     private var drawerRadius = 0f
     private var wpReceiver: BroadcastReceiver? = null
     private var lastCapture = 0L
+    private var preDraw: ViewTreeObserver.OnPreDrawListener? = null
     private var posShown = false
 
     fun install(l: Launcher) {
@@ -497,6 +499,13 @@ object GlassHost {
                 drag.removeView(panel)
                 val idx = drag.indexOfChild(apps)
                 drag.addView(panel, if (idx >= 0) idx else oldIdx.coerceAtLeast(0))
+
+                val pre = ViewTreeObserver.OnPreDrawListener {
+                    try { syncPanelWithDrawer() } catch (_: Throwable) {}
+                    true
+                }
+                preDraw = pre
+                apps.viewTreeObserver.addOnPreDrawListener(pre)
             }
         } catch (t: Throwable) { Log.e("GlassHost", "clip da gaveta falhou", t) }
 
@@ -516,9 +525,7 @@ object GlassHost {
         // Tela inicial: só o dock de vidro. Gaveta aberta: só o vidro grande (fundo da gaveta).
         fun applyState(st: LauncherState) {
             drawerOpen = st == LauncherState.ALL_APPS
-            val panelA = if (drawerOpen) 1f else 0f
             val dockA = if (st == LauncherState.NORMAL) 1f else 0f
-            panel.animate().alpha(panelA).setDuration(220).start()
             dock.animate().alpha(dockA).setDuration(220).start()
             // Gaveta aberta: esconde a tela inicial (ícones, widgets, dock) pra não aparecer por trás do vidro
             listOf<View>(l.workspace, l.hotseat).forEach { v ->
@@ -546,6 +553,18 @@ object GlassHost {
             l.workspace.postDelayed({ captureLive(l) }, 500)
             l.workspace.postDelayed({ captureLive(l) }, 2500)
         }
+    }
+
+    /** Vidro da gaveta acompanha a gaveta: mesma posição vertical e aparece conforme ela sobe. */
+    private fun syncPanelWithDrawer() {
+        val apps = appsView ?: return
+        val panel = views.firstOrNull() ?: return
+        val h = apps.height.toFloat()
+        if (h <= 0f) return
+        if (apps.visibility != View.VISIBLE) { panel.alpha = 0f; return }
+        val ty = apps.translationY.coerceAtLeast(0f)
+        panel.translationY = ty
+        panel.alpha = (1f - ty / (0.55f * h)).coerceIn(0f, 1f)
     }
 
     private fun isLive(c: Context): Boolean =
@@ -654,7 +673,8 @@ object GlassHost {
     fun uninstall() {
         controller?.detach(); controller = null; installed = false
         try { wpReceiver?.let { host?.unregisterReceiver(it) } } catch (_: Throwable) {}
-        wpReceiver = null; host = null; appsView = null
+        try { preDraw?.let { appsView?.viewTreeObserver?.removeOnPreDrawListener(it) } } catch (_: Throwable) {}
+        preDraw = null; wpReceiver = null; host = null; appsView = null
     }
 
     private fun position(l: Launcher, panel: GlassView, dock: GlassView) {
