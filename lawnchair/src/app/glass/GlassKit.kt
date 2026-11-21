@@ -849,6 +849,15 @@ class GlassLockWallpaperService : WallpaperService() {
         private var w = 0
         private var h = 0
         private var imgStamp = -1L
+        private var errCount = 0
+
+        private fun lockLog(msg: String) {
+            try {
+                val f = File(applicationContext.filesDir, "glass_lock.txt")
+                val old = if (f.exists()) f.readLines().takeLast(9) else emptyList()
+                f.writeText((old + "[${System.currentTimeMillis() / 1000}] $msg").joinToString("\n"))
+            } catch (_: Throwable) {}
+        }
 
         private val tick = object : Runnable {
             override fun run() {
@@ -859,12 +868,14 @@ class GlassLockWallpaperService : WallpaperService() {
 
         override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
             w = width; h = height
+            lockLog("surface ${width}x${height}")
             loadImage()
             drawFrame()
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
             visibleNow = visible
+            lockLog("visivel=$visible")
             handler.removeCallbacks(tick)
             if (visible) { loadImage(); handler.post(tick) }
         }
@@ -894,7 +905,8 @@ class GlassLockWallpaperService : WallpaperService() {
                 blurScale = w.toFloat() / strong.width
                 full = img
                 imgStamp = f.lastModified()
-            } catch (_: Throwable) {}
+                lockLog("imagem ok ${src.width}x${src.height}")
+            } catch (t: Throwable) { lockLog("imagem erro ${t.javaClass.simpleName}: ${t.message?.take(120)}") }
         }
 
         private fun drawFrame() {
@@ -907,16 +919,40 @@ class GlassLockWallpaperService : WallpaperService() {
                 if (img == null) { canvas.drawColor(Color.BLACK); return }
                 canvas.drawBitmap(img, 0f, 0f, null)
                 drawGlass(canvas)
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                if (errCount++ < 3) lockLog("erro desenho ${t.javaClass.simpleName}: ${t.message?.take(160)}")
             } finally {
                 try { if (canvas != null) holder.unlockCanvasAndPost(canvas) } catch (_: Throwable) {}
             }
         }
 
         private fun drawGlass(canvas: Canvas) {
-            val s = sharpShader ?: return
-            val b = blurShader ?: return
-            val sh = rt ?: try { makeShader(applicationContext).also { rt = it } } catch (_: Throwable) { return }
+            try {
+                drawGlassShader(canvas)
+            } catch (t: Throwable) {
+                if (errCount++ < 3) lockLog("shader falhou ${t.javaClass.simpleName}: ${t.message?.take(200)}")
+                drawFallbackBlob(canvas)
+            }
+        }
+
+        /** Bolha simples (sem shader): só pra ter algo visível se o vidro de verdade falhar. */
+        private fun drawFallbackBlob(canvas: Canvas) {
+            val wf = w.toFloat(); val hf = h.toFloat()
+            val hx = 0.30f * wf; val hy = 0.14f * wf
+            val box = RectF(wf / 2f - hx, hf * 0.45f - hy, wf / 2f + hx, hf * 0.45f + hy)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG)
+            p.color = Color.argb(46, 255, 255, 255)
+            canvas.drawRoundRect(box, hy, hy, p)
+            p.style = Paint.Style.STROKE
+            p.strokeWidth = 4f
+            p.color = Color.argb(200, 255, 255, 255)
+            canvas.drawRoundRect(box, hy, hy, p)
+        }
+
+        private fun drawGlassShader(canvas: Canvas) {
+            val s = sharpShader ?: throw IllegalStateException("shader de imagem nulo")
+            val b = blurShader ?: throw IllegalStateException("shader de desfoque nulo")
+            val sh = rt ?: makeShader(applicationContext).also { rt = it }
             val m = Matrix()
             m.setScale(sharpScale, sharpScale); s.setLocalMatrix(m)
             m.setScale(blurScale, blurScale); b.setLocalMatrix(m)
